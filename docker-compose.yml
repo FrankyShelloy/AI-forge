@@ -1,0 +1,91 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.13.4
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - internal
+
+  mail:
+    image: analogic/poste.io:latest
+    hostname: mail.corp.local
+    restart: unless-stopped
+    environment:
+      - HTTPS=OFF
+      - DISABLE_CLAMAV=TRUE
+      - DISABLE_RSPAMD=TRUE
+      - DISABLE_ROUNDCUBE=FALSE
+      - TZ=Europe/Moscow
+    volumes:
+      - mail_data:/data
+    networks:
+      - internal
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - SQLITE_PATH=/app/data/app.db
+      - DOCS_DIR=/app/docs
+      - SMTP_HOST=mail
+      - IMAP_HOST=mail
+    volumes:
+      - app_data:/app/data
+      - ./Поиск ответов по корпоративным документам:/app/docs:rw
+    depends_on:
+      - qdrant
+      - mail
+    networks:
+      - internal
+
+  caddy:
+    image: caddy:2.9-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+      - mail
+    networks:
+      - internal
+
+  # === On-Premise GPU Profile (100% isolated corporate contour, <= 128GB VRAM) ===
+  # Запуск: docker compose --profile local up -d
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["local"]
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - internal
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  qdrant_data:
+  mail_data:
+  app_data:
+  caddy_data:
+  caddy_config:
+  ollama_data:

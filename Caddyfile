@@ -1,0 +1,41 @@
+139-100-218-28.sslip.io {
+	encode gzip
+
+	redir /mail /webmail/ 302
+	redir /mail/ /webmail/ 302
+
+	handle /webmail* {
+		reverse_proxy mail:80 {
+			header_up Host {http.request.host}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	handle {
+		reverse_proxy app:8000 {
+			flush_interval -1
+		}
+	}
+}
+
+http://139.100.218.28 {
+	encode gzip
+
+	redir /mail /webmail/ 302
+	redir /mail/ /webmail/ 302
+
+	handle /webmail* {
+		reverse_proxy mail:80 {
+			header_up Host {http.request.host}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Proto http
+		}
+	}
+
+	handle {
+		reverse_proxy app:8000 {
+			flush_interval -1
+		}
+	}
+}

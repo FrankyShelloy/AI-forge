@@ -1,0 +1,29 @@
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*_files/
+*.html
+почта.txt
+chatTG.txt
+трансляция_запись.txt
+Temy_dlya_podgotovki_k_postupleniyu_2025_ec1a356bae.pdf
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Node / Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Runtime data
+data/
+*.db
+*.db-shm
+*.db-wal
+backend/app/static_dist/
