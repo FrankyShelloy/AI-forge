@@ -1,4 +1,4 @@
-"""SQLite (WAL mode) persistence for sessions, messages, tickets, verified FAQ, and analytics."""
+"""SQLite (WAL mode) persistence for sessions, messages, tickets, verified FAQ, security audit, and full clauses."""
 
 from __future__ import annotations
 
@@ -51,6 +51,9 @@ class Database:
                     outcome TEXT DEFAULT NULL,
                     citations_json TEXT DEFAULT '[]',
                     clarification_options_json TEXT DEFAULT '[]',
+                    trace_json TEXT DEFAULT '[]',
+                    has_conflict INTEGER DEFAULT 0,
+                    conflict_note TEXT DEFAULT '',
                     ticket_code TEXT DEFAULT NULL,
                     prompt_tokens INTEGER DEFAULT 0,
                     completion_tokens INTEGER DEFAULT 0,
@@ -120,18 +123,53 @@ class Database:
                     chunk_count INTEGER NOT NULL,
                     indexed_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS document_clauses (
+                    chunk_id TEXT PRIMARY KEY,
+                    doc_id TEXT NOT NULL,
+                    seq INTEGER NOT NULL,
+                    section_num TEXT NOT NULL,
+                    section_title TEXT NOT NULL,
+                    clause_num TEXT NOT NULL,
+                    raw_text TEXT NOT NULL,
+                    external_doc_refs_json TEXT DEFAULT '[]'
+                );
+
+                CREATE TABLE IF NOT EXISTS security_events (
+                    id TEXT PRIMARY KEY,
+                    event_type TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    ticket_code TEXT DEFAULT NULL,
+                    detail TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
+            # Safe additive migrations for existing DB files
+            existing_cols = {
+                r["name"] for r in conn.execute("PRAGMA table_info(messages)").fetchall()
+            }
+            if "trace_json" not in existing_cols:
+                conn.execute("ALTER TABLE messages ADD COLUMN trace_json TEXT DEFAULT '[]'")
+            if "has_conflict" not in existing_cols:
+                conn.execute("ALTER TABLE messages ADD COLUMN has_conflict INTEGER DEFAULT 0")
+            if "conflict_note" not in existing_cols:
+                conn.execute("ALTER TABLE messages ADD COLUMN conflict_note TEXT DEFAULT ''")
 
     # --- Sessions ---
-    def get_or_create_session(self, session_id: str | None, user_email: str, title: str = "Новый диалог") -> dict[str, Any]:
+    def get_or_create_session(
+        self, session_id: str | None, user_email: str, title: str = "Новый диалог"
+    ) -> dict[str, Any]:
         now = utcnow()
         with self._lock, self._connect() as conn:
             if session_id:
                 row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
                 if row:
                     if user_email and row["user_email"] != user_email:
-                        conn.execute("UPDATE sessions SET user_email = ?, updated_at = ? WHERE id = ?", (user_email, now, session_id))
+                        conn.execute(
+                            "UPDATE sessions SET user_email = ?, updated_at = ? WHERE id = ?",
+                            (user_email, now, session_id),
+                        )
                     return dict(row)
             sid = session_id or str(uuid.uuid4())
             conn.execute(
@@ -189,6 +227,9 @@ class Database:
         outcome: str | None = None,
         citations: list[dict[str, Any]] | None = None,
         clarification_options: list[str] | None = None,
+        trace: list[dict[str, Any]] | None = None,
+        has_conflict: bool = False,
+        conflict_note: str = "",
         ticket_code: str | None = None,
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
@@ -203,9 +244,10 @@ class Database:
                 """
                 INSERT INTO messages (
                     id, session_id, role, content, outcome, citations_json,
-                    clarification_options_json, ticket_code, prompt_tokens,
-                    completion_tokens, embedding_tokens, cost_rub, latency_ms, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    clarification_options_json, trace_json, has_conflict, conflict_note,
+                    ticket_code, prompt_tokens, completion_tokens, embedding_tokens,
+                    cost_rub, latency_ms, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     mid,
@@ -215,6 +257,9 @@ class Database:
                     outcome,
                     json.dumps(citations or [], ensure_ascii=False),
                     json.dumps(clarification_options or [], ensure_ascii=False),
+                    json.dumps(trace or [], ensure_ascii=False),
+                    int(bool(has_conflict)),
+                    conflict_note or "",
                     ticket_code,
                     prompt_tokens,
                     completion_tokens,
@@ -233,6 +278,9 @@ class Database:
             "outcome": outcome,
             "citations": citations or [],
             "clarification_options": clarification_options or [],
+            "trace": trace or [],
+            "has_conflict": bool(has_conflict),
+            "conflict_note": conflict_note or "",
             "ticket_code": ticket_code,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
@@ -253,6 +301,8 @@ class Database:
             d = dict(r)
             d["citations"] = json.loads(d.pop("citations_json") or "[]")
             d["clarification_options"] = json.loads(d.pop("clarification_options_json") or "[]")
+            d["trace"] = json.loads(d.pop("trace_json") or "[]")
+            d["has_conflict"] = bool(d.get("has_conflict"))
             out.append(d)
         return out
 
@@ -279,12 +329,23 @@ class Database:
                     directorate, smtp_message_id, status, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (tid, ticket_code, session_id, user_email, question, context_summary, directorate, smtp_message_id, status, now),
+                (
+                    tid,
+                    ticket_code,
+                    session_id,
+                    user_email,
+                    question,
+                    context_summary,
+                    directorate,
+                    smtp_message_id,
+                    status,
+                    now,
+                ),
             )
             row = conn.execute("SELECT * FROM escalation_tickets WHERE id = ?", (tid,)).fetchone()
             return dict(row)
 
-    def find_open_ticket_by_message_ids_or_code(
+    def find_ticket_by_message_ids_or_code(
         self, message_ids: list[str], ticket_code: str | None
     ) -> dict[str, Any] | None:
         with self._lock, self._connect() as conn:
@@ -334,7 +395,7 @@ class Database:
             return [dict(r) for r in rows]
 
     # --- FAQ Entries ---
-    def create_faq(
+    def upsert_faq_for_ticket(
         self,
         ticket_code: str,
         question: str,
@@ -343,9 +404,24 @@ class Database:
         directorate: str = "ALL",
         linked_doc_title: str = "",
     ) -> dict[str, Any]:
-        fid = str(uuid.uuid4())
+        """Create or cleanly update an existing FAQ entry for a ticket (prevents duplicates on follow-up replies)."""
         now = utcnow()
         with self._lock, self._connect() as conn:
+            existing = conn.execute(
+                "SELECT * FROM faq_entries WHERE ticket_code = ?", (ticket_code,)
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE faq_entries
+                    SET answer = ?, verified_by = ?, status = 'active', created_at = ?
+                    WHERE id = ?
+                    """,
+                    (answer, verified_by, now, existing["id"]),
+                )
+                row = conn.execute("SELECT * FROM faq_entries WHERE id = ?", (existing["id"],)).fetchone()
+                return dict(row)
+            fid = str(uuid.uuid4())
             conn.execute(
                 """
                 INSERT INTO faq_entries (
@@ -357,6 +433,9 @@ class Database:
             )
             row = conn.execute("SELECT * FROM faq_entries WHERE id = ?", (fid,)).fetchone()
             return dict(row)
+
+    # Alias for backward compatibility in tests
+    create_faq = upsert_faq_for_ticket
 
     def list_faqs(self, active_only: bool = False) -> list[dict[str, Any]]:
         with self._lock, self._connect() as conn:
@@ -373,6 +452,25 @@ class Database:
     def toggle_faq_status(self, faq_id: str, status: str) -> None:
         with self._lock, self._connect() as conn:
             conn.execute("UPDATE faq_entries SET status = ? WHERE id = ?", (status, faq_id))
+
+    # --- Security Audit Events ---
+    def log_security_event(
+        self, event_type: str, actor: str, detail: str, ticket_code: str | None = None
+    ) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT INTO security_events (id, event_type, actor, ticket_code, detail, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), event_type, actor, ticket_code, detail, utcnow()),
+            )
+
+    def list_security_events(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            return [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM security_events ORDER BY created_at DESC LIMIT ?", (limit,)
+                ).fetchall()
+            ]
 
     # --- Analytics ---
     def log_analytics(
@@ -426,7 +524,7 @@ class Database:
                 ).fetchall()
             ]
 
-    # --- Indexed Docs ---
+    # --- Indexed Docs & Clauses (for Interactive Regulation Explorer) ---
     def upsert_indexed_doc(
         self,
         doc_id: str,
@@ -454,6 +552,63 @@ class Database:
                 """,
                 (doc_id, filename, doc_title, directorate, directorate_label, stage, chunk_count, utcnow()),
             )
+
+    def replace_doc_clauses(self, doc_id: str, clauses: list[dict[str, Any]]) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM document_clauses WHERE doc_id = ?", (doc_id,))
+            conn.executemany(
+                """
+                INSERT INTO document_clauses (
+                    chunk_id, doc_id, seq, section_num, section_title, clause_num, raw_text, external_doc_refs_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        c["chunk_id"],
+                        doc_id,
+                        idx,
+                        c["section_num"],
+                        c["section_title"],
+                        c["clause_num"],
+                        c["raw_text"],
+                        json.dumps(c.get("external_doc_refs") or [], ensure_ascii=False),
+                    )
+                    for idx, c in enumerate(clauses)
+                ],
+            )
+
+    def get_doc_with_clauses(self, doc_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            doc = conn.execute(
+                "SELECT * FROM indexed_documents WHERE doc_id = ?", (doc_id,)
+            ).fetchone()
+            if not doc:
+                return None
+            rows = conn.execute(
+                "SELECT * FROM document_clauses WHERE doc_id = ? ORDER BY seq ASC", (doc_id,)
+            ).fetchall()
+        sections_map: dict[str, dict[str, Any]] = {}
+        section_order: list[str] = []
+        for r in rows:
+            skey = r["section_num"]
+            if skey not in sections_map:
+                sections_map[skey] = {
+                    "section_num": r["section_num"],
+                    "section_title": r["section_title"],
+                    "clauses": [],
+                }
+                section_order.append(skey)
+            sections_map[skey]["clauses"].append(
+                {
+                    "chunk_id": r["chunk_id"],
+                    "clause_num": r["clause_num"],
+                    "raw_text": r["raw_text"],
+                    "external_doc_refs": json.loads(r["external_doc_refs_json"] or "[]"),
+                }
+            )
+        result = dict(doc)
+        result["sections"] = [sections_map[k] for k in section_order]
+        return result
 
     def list_indexed_docs(self) -> list[dict[str, Any]]:
         with self._lock, self._connect() as conn:

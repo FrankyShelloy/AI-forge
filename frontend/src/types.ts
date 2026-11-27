@@ -17,6 +17,13 @@ export interface Citation {
   answered_at?: string | null;
 }
 
+export interface AgentTraceStep {
+  step: string;
+  title: string;
+  duration_ms: number;
+  detail: string;
+}
+
 export interface ChatMessage {
   id: string;
   session_id: string;
@@ -25,6 +32,9 @@ export interface ChatMessage {
   outcome?: string | null;
   citations: Citation[];
   clarification_options: string[];
+  trace?: AgentTraceStep[];
+  has_conflict?: boolean;
+  conflict_note?: string;
   ticket_code?: string | null;
   prompt_tokens?: number;
   completion_tokens?: number;
@@ -84,6 +94,33 @@ export interface IndexedDoc {
   indexed_at: string;
 }
 
+export interface DocClause {
+  chunk_id: string;
+  clause_num: string;
+  raw_text: string;
+  external_doc_refs: string[];
+}
+
+export interface DocSection {
+  section_num: string;
+  section_title: string;
+  clauses: DocClause[];
+}
+
+export interface DocDetail extends IndexedDoc {
+  sections: DocSection[];
+  linked_faqs: FaqEntry[];
+}
+
+export interface SecurityEvent {
+  id: string;
+  event_type: string;
+  actor: string;
+  ticket_code?: string | null;
+  detail: string;
+  created_at: string;
+}
+
 export interface AnalyticsData {
   summary: {
     total_queries: number;
@@ -91,9 +128,12 @@ export interface AnalyticsData {
     clarified: number;
     escalated: number;
     out_of_scope_or_refused: number;
+    resolution_rate_pct: number;
     tickets_total: number;
     tickets_indexed: number;
     faq_active: number;
+    faq_total_reuses: number;
+    security_blocked_count: number;
     avg_latency_ms: number;
     avg_cost_rub: number;
     total_prompt_tokens: number;
@@ -125,16 +165,40 @@ export interface AnalyticsData {
     reason: string;
     severity: "high" | "medium";
   }>;
+  security_events: SecurityEvent[];
   documents: IndexedDoc[];
 }
 
 export interface HealthInfo {
   status: string;
+  version?: string;
   llm_model: string;
   embedding_model: string;
   docs_indexed: number;
+  chunks_indexed?: number;
   faq_active: number;
   webmail_url: string;
   default_employee_email: string;
   quality_email: string;
+}
+
+export interface SystemModelsInfo {
+  perimeter_mode: string;
+  vram_limit_gb: number;
+  estimated_local_vram_gb: number;
+  models: Array<{
+    role: string;
+    id: string;
+    hf_repo: string;
+    hf_url: string;
+    license: string;
+    architecture: string;
+    vram_q4_gb: number;
+  }>;
+  integrations: {
+    dion_webhook_endpoint: string;
+    openapi_docs: string;
+    mail_whitelist: string[];
+    official_regulation_priority: string;
+  };
 }

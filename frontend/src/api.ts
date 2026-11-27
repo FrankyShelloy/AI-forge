@@ -1,15 +1,24 @@
 import type {
   AnalyticsData,
   ChatMessage,
+  DocDetail,
   EscalationTicket,
   FaqEntry,
   HealthInfo,
+  IndexedDoc,
   SessionInfo,
+  SystemModelsInfo,
 } from "./types";
 
 export async function fetchHealth(): Promise<HealthInfo> {
   const res = await fetch("/api/health");
   if (!res.ok) throw new Error("Health check failed");
+  return res.json();
+}
+
+export async function fetchSystemModels(): Promise<SystemModelsInfo> {
+  const res = await fetch("/api/system/models");
+  if (!res.ok) throw new Error("Failed to load model governance info");
   return res.json();
 }
 
@@ -27,6 +36,20 @@ export async function fetchMessages(sessionId: string): Promise<ChatMessage[]> {
 
 export async function deleteSession(sessionId: string): Promise<void> {
   await fetch(`/api/sessions/${sessionId}`, { method: "DELETE" });
+}
+
+export async function manualEscalate(params: {
+  session_id: string;
+  question: string;
+  user_email: string;
+}): Promise<EscalationTicket> {
+  const res = await fetch("/api/escalate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error("Escalation failed");
+  return res.json();
 }
 
 export async function syncMailNow(): Promise<{
@@ -68,6 +91,18 @@ export async function toggleFaqStatus(
     body: JSON.stringify({ status }),
   });
   if (!res.ok) throw new Error("Failed to update FAQ status");
+}
+
+export async function fetchDocuments(): Promise<IndexedDoc[]> {
+  const res = await fetch("/api/documents");
+  if (!res.ok) throw new Error("Failed to load documents");
+  return res.json();
+}
+
+export async function fetchDocumentDetail(docId: string): Promise<DocDetail> {
+  const res = await fetch(`/api/documents/${docId}`);
+  if (!res.ok) throw new Error("Failed to load document detail");
+  return res.json();
 }
 
 export async function uploadDocx(file: File): Promise<{
@@ -134,7 +169,7 @@ export async function streamChat(
           else if (currentEvent === "done") handlers.onDone(data.message);
           else if (currentEvent === "error") handlers.onError(data.detail || "Ошибка агента");
         } catch {
-          // ignore partial chunk
+          // ignore partial JSON chunk
         }
       }
     }

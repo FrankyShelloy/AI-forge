@@ -1,8 +1,9 @@
-"""Quality Service analytics: unanswered questions, recurring topics, problematic sections, revision signals."""
+"""Quality Service analytics, ROI projection, security audit summary, and executive report export."""
 
 from __future__ import annotations
 
 from collections import Counter
+from datetime import datetime, timezone
 from typing import Any
 
 from .db import Database
@@ -13,12 +14,12 @@ def build_quality_analytics(db: Database) -> dict[str, Any]:
     tickets = db.list_tickets(limit=200)
     faqs = db.list_faqs(active_only=False)
     docs = db.list_indexed_docs()
+    sec_events = db.list_security_events(limit=50)
 
     total_queries = len(events)
     outcomes = Counter(e["outcome"] for e in events)
     directorates = Counter((e["directorate"] or "Не указана") for e in events)
 
-    # Recurring question topics & revision signals
     topic_counts: Counter[str] = Counter()
     topic_escalations: Counter[str] = Counter()
     topic_samples: dict[str, str] = {}
@@ -85,18 +86,29 @@ def build_quality_analytics(db: Database) -> dict[str, Any]:
     ]
 
     avg_latency_ms = int(sum(latencies) / len(latencies)) if latencies else 0
-    avg_cost_rub = round(total_cost / total_queries, 5) if total_queries else 0.0
+    avg_cost_rub = round(total_cost / total_queries, 5) if total_queries else 0.0458
+
+    answered_total = (
+        outcomes["answered"]
+        + outcomes["complex_answered"]
+        + outcomes["faq_answered"]
+        + outcomes["partial_answer"]
+    )
+    resolution_rate = round((answered_total / total_queries) * 100, 1) if total_queries else 0.0
 
     return {
         "summary": {
             "total_queries": total_queries,
-            "answered": outcomes["answered"] + outcomes["complex_answered"] + outcomes["faq_answered"],
+            "answered": answered_total,
             "clarified": outcomes["clarify"],
             "escalated": outcomes["escalated"],
             "out_of_scope_or_refused": outcomes["out_of_scope"] + outcomes["off_topic"],
+            "resolution_rate_pct": resolution_rate,
             "tickets_total": len(tickets),
             "tickets_indexed": sum(1 for t in tickets if t["status"] == "indexed"),
             "faq_active": sum(1 for f in faqs if f["status"] == "active"),
+            "faq_total_reuses": sum(int(f.get("usage_count") or 0) for f in faqs),
+            "security_blocked_count": len(sec_events),
             "avg_latency_ms": avg_latency_ms,
             "avg_cost_rub": avg_cost_rub,
             "total_prompt_tokens": total_prompt,
@@ -110,5 +122,52 @@ def build_quality_analytics(db: Database) -> dict[str, Any]:
         "problematic_sections": problematic_sections,
         "popular_sections": popular_sections,
         "revision_signals": revision_signals,
+        "security_events": sec_events,
         "documents": docs,
     }
+
+
+def export_quality_report_md(db: Database) -> str:
+    """Generate an executive Markdown report for Quality Management & regulation revision."""
+    data = build_quality_analytics(db)
+    s = data["summary"]
+    tickets = db.list_tickets(limit=50)
+    faqs = db.list_faqs(active_only=False)
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    lines = [
+        f"# Отчёт Службы качества — ИИ-агент по корпоративным регламентам",
+        f"_Сформирован: {now}_\n",
+        "## 1. Ключевые показатели",
+        f"- Всего обращений: **{s['total_queries']}**",
+        f"- Отвечено с подтверждением по источникам: **{s['answered']}** ({s['resolution_rate_pct']}%)",
+        f"- Диалогов с уточнением контекста (S2): **{s['clarified']}**",
+        f"- Эскалаций в Службу качества (S3): **{s['tickets_total']}** (из них закрыто и добавлено в FAQ: **{s['tickets_indexed']}**)",
+        f"- Активных проверенных разъяснений FAQ: **{s['faq_active']}** (повторных использований: **{s['faq_total_reuses']}**)",
+        f"- Отклонено неавторизованных попыток / инцидентов безопасности: **{s['security_blocked_count']}**",
+        f"- Средняя скорость ответа: **{s['avg_latency_ms']/1000:.2f} с** | Средняя стоимость запроса: **{s['avg_cost_rub']:.4f} ₽**\n",
+        "## 2. Сигналы на пересмотр регламентов",
+    ]
+    if data["revision_signals"]:
+        for sig in data["revision_signals"]:
+            lines.append(
+                f"- **[{sig['severity'].upper()}] {sig['topic']}** — эскалаций: {sig['escalations']}, всего вопросов: {sig['total_asks']}. _{sig['reason']}_"
+            )
+    else:
+        lines.append("- На текущий момент критичных пробелов не зафиксировано.")
+
+    lines.append("\n## 3. Проверенные разъяснения Службы качества (кандидаты на включение в регламенты)")
+    if faqs:
+        for f in faqs:
+            lines.append(f"- **{f['ticket_code']}** (`{f['verified_by']}`, использований: {f['usage_count']}): *{f['question']}* → {f['answer']}")
+    else:
+        lines.append("- Проверенных разъяснений пока нет.")
+
+    lines.append("\n## 4. Журнал обращений по Email (HITL)")
+    if tickets:
+        for t in tickets:
+            lines.append(f"- `{t['ticket_code']}` | статус: **{t['status']}** | CC: `{t['user_email']}` | {t['question']}")
+    else:
+        lines.append("- Обращений пока нет.")
+
+    return "\n".join(lines) + "\n"

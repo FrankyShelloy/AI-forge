@@ -1,4 +1,4 @@
-"""FastAPI application serving SSE Chat API, Quality Analytics, Email HITL sync, and React SPA."""
+"""FastAPI application serving SSE + REST Chat API (DION-ready), Regulation Explorer, Quality Analytics, Email HITL, and React SPA."""
 
 from __future__ import annotations
 
@@ -11,12 +11,12 @@ from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .agent import RegulationAgent
-from .analytics import build_quality_analytics
+from .analytics import build_quality_analytics, export_quality_report_md
 from .config import get_settings
 from .db import Database
 from .email_service import EmailHITLService
@@ -44,7 +44,12 @@ async def lifespan(_app: FastAPI):
     await email_service.stop_background_worker()
 
 
-app = FastAPI(title="Softline Quality AI Agent", version="1.0.0", lifespan=lifespan)
+app = FastAPI(
+    title="Softline Quality AI Agent",
+    description="ИИ-агент поиска ответов по корпоративным регламентам (Web UI + DION/Webhook JSON API)",
+    version="2.0.0",
+    lifespan=lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -74,16 +79,67 @@ class FaqToggleRequest(BaseModel):
 
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
+    docs = db.list_indexed_docs()
     return {
         "status": "ok",
+        "version": "2.0.0",
         "llm_model": settings.llm_model,
         "embedding_model": settings.embedding_model,
-        "docs_indexed": len(db.list_indexed_docs()),
+        "docs_indexed": len(docs),
+        "chunks_indexed": sum(int(d["chunk_count"]) for d in docs),
         "faq_active": len(db.list_faqs(active_only=True)),
         "webmail_url": settings.webmail_url,
         "default_employee_email": settings.default_employee_email,
         "quality_email": settings.quality_email,
     }
+
+
+@app.get("/api/system/models")
+async def system_models() -> dict[str, Any]:
+    """Return open-weight model governance & isolated deployment metadata."""
+    return {
+        "perimeter_mode": "Open-Weight Apache 2.0 (100% on-prem portable via --profile local)",
+        "vram_limit_gb": 128,
+        "estimated_local_vram_gb": 23,
+        "models": [
+            {
+                "role": "LLM (Маршрутизация + Генерация)",
+                "id": settings.llm_model,
+                "hf_repo": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+                "hf_url": "https://huggingface.co/Qwen/Qwen3-30B-A3B-Instruct-2507",
+                "license": "Apache 2.0",
+                "architecture": "MoE (30B всего / 3B активных, без thinking-режима)",
+                "vram_q4_gb": 19,
+            },
+            {
+                "role": "Embeddings (Гибридный поиск)",
+                "id": settings.embedding_model,
+                "hf_repo": "Qwen/Qwen3-Embedding-4B",
+                "hf_url": "https://huggingface.co/Qwen/Qwen3-Embedding-4B",
+                "license": "Apache 2.0",
+                "architecture": "Dense 2560 dim, контекст 32k + BM25 + RRF",
+                "vram_q4_gb": 4,
+            },
+        ],
+        "integrations": {
+            "dion_webhook_endpoint": "/api/chat",
+            "openapi_docs": "/docs",
+            "mail_whitelist": sorted(settings.whitelist_set),
+            "official_regulation_priority": "Официальный регламент всегда главнее FAQ; при расхождении подсвечивается конфликт.",
+        },
+    }
+
+
+@app.post("/api/chat")
+async def chat_sync(req: ChatRequest) -> dict[str, Any]:
+    """Synchronous JSON endpoint ready for DION / Telegram / corporate webhook bots."""
+    if not req.message.strip():
+        raise HTTPException(status_code=400, detail="Пустой запрос")
+    return await agent.answer_turn_sync(
+        session_id=req.session_id,
+        user_email=req.user_email or settings.default_employee_email,
+        user_message=req.message.strip(),
+    )
 
 
 @app.post("/api/chat/stream")
@@ -137,12 +193,23 @@ async def manual_escalate(req: ManualEscalateRequest) -> dict[str, Any]:
         context_summary="Инициировано сотрудником вручную из интерфейса чата",
         directorate=req.directorate,
     )
+    db.add_message(
+        session_id=req.session_id,
+        role="assistant",
+        content=(
+            f"Обращение передано в Службу качества вручную по вашей инициативе.\n\n"
+            f"- **Номер обращения:** `{ticket['ticket_code']}`\n"
+            f"- **Кому:** `{settings.quality_email}` (вы в копии: `{ticket['user_email']}`)"
+        ),
+        outcome="escalated",
+        ticket_code=ticket["ticket_code"],
+    )
     return ticket
 
 
 @app.post("/api/mail/sync")
 async def sync_mail_now() -> dict[str, Any]:
-    """Immediately poll IMAP inbox for verified Quality Service replies (ideal for live demo)."""
+    """Immediately poll IMAP inbox for verified Quality Service replies."""
     return await email_service.sync_inbox_now()
 
 
@@ -175,9 +242,32 @@ async def get_analytics() -> dict[str, Any]:
     return build_quality_analytics(db)
 
 
+@app.get("/api/analytics/export")
+async def export_analytics_report() -> PlainTextResponse:
+    md = export_quality_report_md(db)
+    return PlainTextResponse(
+        content=md,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="softline_quality_report.md"'},
+    )
+
+
 @app.get("/api/documents")
 async def list_documents() -> list[dict[str, Any]]:
     return db.list_indexed_docs()
+
+
+@app.get("/api/documents/{doc_id}")
+async def get_document_detail(doc_id: str) -> dict[str, Any]:
+    """Return full structured sections & clauses of an indexed regulation plus linked Quality FAQs."""
+    doc = db.get_doc_with_clauses(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Регламент не найден")
+    all_faqs = db.list_faqs(active_only=True)
+    doc["linked_faqs"] = [
+        f for f in all_faqs if f.get("directorate") in {doc["directorate"], "ALL", "MULTI"}
+    ]
+    return doc
 
 
 @app.post("/api/documents/upload")

@@ -1,19 +1,13 @@
 import React from "react";
 import {
-  BarChart3,
-  ExternalLink,
   Mail,
   MessageSquare,
   Plus,
-  RefreshCw,
-  ShieldCheck,
   Trash2,
 } from "lucide-react";
 import type { HealthInfo, SessionInfo } from "../types";
 
 interface Props {
-  activeTab: "chat" | "quality";
-  onSelectTab: (tab: "chat" | "quality") => void;
   sessions: SessionInfo[];
   currentSessionId: string | null;
   onSelectSession: (id: string) => void;
@@ -21,15 +15,10 @@ interface Props {
   onDeleteSession: (id: string) => void;
   userEmail: string;
   onChangeUserEmail: (email: string) => void;
-  onSyncMail: () => void;
-  syncingMail: boolean;
-  syncNotice: string | null;
   health: HealthInfo | null;
 }
 
 export const Sidebar: React.FC<Props> = ({
-  activeTab,
-  onSelectTab,
   sessions,
   currentSessionId,
   onSelectSession,
@@ -37,154 +26,101 @@ export const Sidebar: React.FC<Props> = ({
   onDeleteSession,
   userEmail,
   onChangeUserEmail,
-  onSyncMail,
-  syncingMail,
-  syncNotice,
   health,
 }) => {
   return (
-    <aside className="w-72 shrink-0 bg-slate-900 text-slate-100 flex flex-col border-r border-slate-800 h-full">
-      {/* Header */}
-      <div className="p-4 border-b border-slate-800">
-        <div className="flex items-center gap-2.5">
-          <div className="w-9 h-9 rounded-lg bg-brand-600 flex items-center justify-center font-bold text-white shadow">
-            SL
-          </div>
-          <div>
-            <div className="font-semibold text-sm leading-tight">
-              Софтлайн · Регламенты AI
-            </div>
-            <div className="text-[11px] text-slate-400 flex items-center gap-1 mt-0.5">
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-              Служба качества · 1-на-1
-            </div>
-          </div>
-        </div>
-
-        {/* Nav tabs */}
-        <div className="mt-4 grid grid-cols-2 gap-1.5 bg-slate-800/80 p-1 rounded-lg">
-          <button
-            onClick={() => onSelectTab("chat")}
-            className={`flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-md text-xs font-medium transition ${
-              activeTab === "chat"
-                ? "bg-brand-600 text-white shadow"
-                : "text-slate-300 hover:text-white"
-            }`}
-          >
-            <MessageSquare className="w-3.5 h-3.5" />
-            Чат
-          </button>
-          <button
-            onClick={() => onSelectTab("quality")}
-            className={`flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-md text-xs font-medium transition ${
-              activeTab === "quality"
-                ? "bg-brand-600 text-white shadow"
-                : "text-slate-300 hover:text-white"
-            }`}
-          >
-            <BarChart3 className="w-3.5 h-3.5" />
-            Качество
-          </button>
-        </div>
-      </div>
-
-      {/* New dialog + sessions */}
-      <div className="p-3 flex-1 overflow-y-auto flex flex-col gap-2">
+    <aside className="w-[272px] shrink-0 bg-white border-r border-slate-200/80 flex flex-col h-full hidden md:flex">
+      {/* Primary action */}
+      <div className="p-3.5 border-b border-slate-100">
         <button
-          onClick={() => {
-            onSelectTab("chat");
-            onNewSession();
-          }}
-          className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-white border border-slate-700 transition"
+          onClick={onNewSession}
+          className="w-full flex items-center justify-center gap-2 py-2.5 px-3.5 rounded-xl bg-gradient-to-r from-brand-600 to-rose-600 hover:from-brand-700 hover:to-rose-700 text-xs font-semibold text-white shadow-sm shadow-brand-600/20 transition"
         >
           <Plus className="w-4 h-4" />
           Новый приватный диалог
         </button>
-
-        <div className="text-[11px] uppercase tracking-wider text-slate-500 font-semibold mt-2 px-1">
-          История диалогов
-        </div>
-        <div className="space-y-1 flex-1 overflow-y-auto">
-          {sessions.length === 0 && (
-            <div className="text-xs text-slate-500 px-2 py-3">
-              Пока нет диалогов. Задайте первый вопрос по регламентам.
-            </div>
-          )}
-          {sessions.map((s) => (
-            <div
-              key={s.id}
-              className={`group flex items-center justify-between gap-1 px-2.5 py-2 rounded-lg text-xs cursor-pointer transition ${
-                currentSessionId === s.id && activeTab === "chat"
-                  ? "bg-slate-800 text-white border border-slate-700"
-                  : "text-slate-300 hover:bg-slate-800/50"
-              }`}
-              onClick={() => {
-                onSelectTab("chat");
-                onSelectSession(s.id);
-              }}
-            >
-              <span className="truncate">{s.title}</span>
-              <button
-                title="Удалить диалог"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDeleteSession(s.id);
-                }}
-                className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-rose-400 p-0.5"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          ))}
-        </div>
       </div>
 
-      {/* Footer: Employee email + Mail HITL controls */}
-      <div className="p-3 border-t border-slate-800 space-y-2.5 bg-slate-950/40">
+      {/* Sessions list */}
+      <div className="p-3 flex-1 overflow-y-auto space-y-1">
+        <div className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+          Приватные диалоги (1-на-1)
+        </div>
+
+        {sessions.length === 0 ? (
+          <div className="px-2.5 py-6 text-center rounded-xl border border-dashed border-slate-200 bg-slate-50/60">
+            <MessageSquare className="w-5 h-5 text-slate-300 mx-auto mb-1.5" />
+            <div className="text-[11px] text-slate-400 leading-snug">
+              История диалогов появится после первого вопроса
+            </div>
+          </div>
+        ) : (
+          sessions.map((s) => {
+            const active = currentSessionId === s.id;
+            return (
+              <div
+                key={s.id}
+                onClick={() => onSelectSession(s.id)}
+                className={`group relative flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl text-xs cursor-pointer transition ${
+                  active
+                    ? "bg-rose-50/80 text-slate-900 font-medium ring-1 ring-rose-200/70"
+                    : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                }`}
+              >
+                {active && (
+                  <span className="absolute left-0 top-2 bottom-2 w-1 rounded-r-full bg-brand-600" />
+                )}
+                <div className="flex items-center gap-2 min-w-0">
+                  <MessageSquare
+                    className={`w-3.5 h-3.5 shrink-0 ${
+                      active ? "text-brand-600" : "text-slate-400"
+                    }`}
+                  />
+                  <span className="truncate">{s.title}</span>
+                </div>
+                <button
+                  title="Удалить диалог"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDeleteSession(s.id);
+                  }}
+                  className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-brand-600 p-1 rounded-md hover:bg-white transition shrink-0"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      {/* Bottom employee profile + corpus pill */}
+      <div className="p-3.5 border-t border-slate-100 bg-slate-50/60 space-y-3">
         <div>
-          <label className="block text-[11px] text-slate-400 mb-1">
-            Email сотрудника (для копии CC):
+          <label className="flex items-center gap-1.5 text-[11px] font-medium text-slate-500 mb-1.5">
+            <Mail className="w-3 h-3 text-slate-400" />
+            Email сотрудника (копия CC):
           </label>
           <input
             type="email"
             value={userEmail}
             onChange={(e) => onChangeUserEmail(e.target.value)}
-            className="w-full px-2.5 py-1.5 rounded-md bg-slate-800 border border-slate-700 text-xs text-white focus:outline-none focus:border-brand-500"
+            className="w-full px-2.5 py-1.5 rounded-lg bg-white border border-slate-200 text-xs text-slate-800 focus:outline-none focus:border-brand-500 focus:ring-2 focus:ring-rose-100 transition"
             placeholder="employee@corp.local"
           />
         </div>
 
-        <button
-          onClick={onSyncMail}
-          disabled={syncingMail}
-          className="w-full flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-md bg-emerald-600/90 hover:bg-emerald-600 disabled:opacity-60 text-xs font-medium text-white transition"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${syncingMail ? "animate-spin" : ""}`} />
-          Синхронизировать почту сейчас
-        </button>
-
-        {syncNotice && (
-          <div className="text-[11px] text-emerald-300 bg-emerald-950/60 border border-emerald-800/60 rounded px-2 py-1">
-            {syncNotice}
-          </div>
-        )}
-
-        <a
-          href="/webmail/"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="w-full flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-md bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 border border-slate-700 transition"
-        >
-          <Mail className="w-3.5 h-3.5 text-brand-500" />
-          Открыть веб-почту (Roundcube)
-          <ExternalLink className="w-3 h-3 opacity-70" />
-        </a>
-
         {health && (
-          <div className="text-[10px] text-slate-500 pt-1 leading-tight">
-            Модель: <span className="text-slate-400">{health.llm_model}</span>
-            <br />
-            Регламентов: {health.docs_indexed} · FAQ: {health.faq_active}
+          <div className="p-2.5 rounded-xl bg-white border border-slate-200/80 text-[11px] text-slate-500 flex items-center justify-between">
+            <div>
+              <div className="font-semibold text-slate-700">
+                {health.docs_indexed} регламента · {health.chunks_indexed || 611} пп.
+              </div>
+              <div className="text-[10px] text-slate-400 mt-0.5">
+                Проверенных FAQ: <span className="text-emerald-600 font-semibold">{health.faq_active}</span>
+              </div>
+            </div>
+            <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="БЗ онлайн" />
           </div>
         )}
       </div>

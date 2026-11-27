@@ -24,9 +24,9 @@ logger = logging.getLogger(__name__)
 
 TICKET_CODE_RE = re.compile(r"\[?(QA-\d{4}-\d{4})\]?", re.I)
 
-# Russian + English quote / signature cutoffs
+# Russian + English quote / signature cutoffs (including Roundcube RU/EN formats)
 RU_QUOTE_PATTERNS = [
-    re.compile(r"^\s*\d{1,2}[./-]\d{1,2}[./-]\d{2,4}.*?(?:написал|пишет|wrote).*?:", re.I | re.M),
+    re.compile(r"^\s*\d{1,4}[./-]\d{1,2}[./-]\d{2,4}.*?(?:написал|пишет|wrote).*?:", re.I | re.M),
     re.compile(r"^\s*On\s+.+?wrote:\s*$", re.I | re.M),
     re.compile(r"^\s*[-_]{2,}\s*(?:Исходное сообщение|Original Message|Пересылаемое сообщение)", re.I | re.M),
     re.compile(r"^\s*(?:От|From):\s+.+\n\s*(?:Отправлено|Sent|Дата|Date):", re.I | re.M),
@@ -239,13 +239,13 @@ class EmailHITLService:
                 tcode = m_code.group(1).upper() if m_code else None
                 ref_ids = [x.strip() for x in f"{in_reply_to} {references}".split() if x.strip()]
 
-                ticket = self.db.find_open_ticket_by_message_ids_or_code(ref_ids, tcode)
+                ticket = self.db.find_ticket_by_message_ids_or_code(ref_ids, tcode)
                 if not ticket:
                     # Also check body for ticket code as last resort
                     raw_body = _extract_plain_body(msg)
                     m_body = TICKET_CODE_RE.search(raw_body)
                     if m_body:
-                        ticket = self.db.find_open_ticket_by_message_ids_or_code([], m_body.group(1).upper())
+                        ticket = self.db.find_ticket_by_message_ids_or_code([], m_body.group(1).upper())
                 else:
                     raw_body = _extract_plain_body(msg)
 
@@ -261,6 +261,12 @@ class EmailHITLService:
                         sender_email,
                         whitelist,
                     )
+                    self.db.log_security_event(
+                        event_type="unauthorized_email_reply",
+                        actor=sender_email,
+                        ticket_code=ticket["ticket_code"],
+                        detail="Попытка ответа в тред обращения с адреса вне whitelist Службы качества — письмо отклонено, БЗ не изменена.",
+                    )
                     ignored_unauth += 1
                     mail.store(num, "+FLAGS", "\\Seen")
                     continue
@@ -270,7 +276,8 @@ class EmailHITLService:
                     mail.store(num, "+FLAGS", "\\Seen")
                     continue
 
-                faq = self.db.create_faq(
+                was_already_indexed = ticket.get("status") == "indexed"
+                faq = self.db.upsert_faq_for_ticket(
                     ticket_code=ticket["ticket_code"],
                     question=ticket["question"],
                     answer=clean_text,
@@ -288,12 +295,16 @@ class EmailHITLService:
                         faq_id=faq["id"],
                         linked_doc_title=faq["linked_doc_title"],
                     )
-                    # Post an automatic notification message into the original user chat session!
+                    header_lbl = (
+                        "Обновлён проверенный ответ от Службы качества"
+                        if was_already_indexed
+                        else "Получен проверенный ответ от Службы качества"
+                    )
                     self.db.add_message(
                         session_id=ticket["session_id"],
                         role="assistant",
                         content=(
-                            f"**Получен проверенный ответ от Службы качества** (`{sender_email}`, обращение `{ticket['ticket_code']}`):\n\n"
+                            f"**{header_lbl}** (`{sender_email}`, обращение `{ticket['ticket_code']}`):\n\n"
                             f"{clean_text}\n\n"
                             f"_Разъяснение сохранено в проверенной базе знаний (FAQ) и будет автоматически использоваться при повторных вопросах._"
                         ),

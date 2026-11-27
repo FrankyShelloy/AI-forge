@@ -166,7 +166,7 @@ class HybridRetriever:
             logger.info("Qdrant already has %d regulation chunks; loading BM25 index.", reg_count)
             self._load_bm25_from_chunks(chunks)
 
-        # Record indexed documents metadata in SQLite
+        # Record indexed documents & structured clauses metadata in SQLite (for Document Explorer)
         by_doc: dict[str, list[ParsedChunk]] = {}
         for c in chunks:
             by_doc.setdefault(c.doc_id, []).append(c)
@@ -180,6 +180,20 @@ class HybridRetriever:
                 directorate_label=c0.directorate_label,
                 stage=c0.stage,
                 chunk_count=len(dchunks),
+            )
+            self.db.replace_doc_clauses(
+                doc_id,
+                [
+                    {
+                        "chunk_id": ch.chunk_id,
+                        "section_num": ch.section_num,
+                        "section_title": ch.section_title,
+                        "clause_num": ch.clause_num,
+                        "raw_text": ch.raw_clause_text,
+                        "external_doc_refs": ch.external_doc_refs,
+                    }
+                    for ch in dchunks
+                ],
             )
 
         # Sync active FAQ entries from SQLite into Qdrant & BM25
@@ -260,6 +274,20 @@ class HybridRetriever:
             directorate_label=c0.directorate_label,
             stage=c0.stage,
             chunk_count=len(chunks),
+        )
+        self.db.replace_doc_clauses(
+            c0.doc_id,
+            [
+                {
+                    "chunk_id": ch.chunk_id,
+                    "section_num": ch.section_num,
+                    "section_title": ch.section_title,
+                    "clause_num": ch.clause_num,
+                    "raw_text": ch.raw_clause_text,
+                    "external_doc_refs": ch.external_doc_refs,
+                }
+                for ch in chunks
+            ],
         )
         return {
             "doc_id": c0.doc_id,
@@ -456,7 +484,7 @@ class HybridRetriever:
 
         # 1. Search official regulations
         if directorates_list and len(directorates_list) >= 2:
-            per_dir = max(3, top_k_regs // len(directorates_list))
+            per_dir = max(4, top_k_regs // len(directorates_list))
             reg_items: list[RetrievedItem] = []
             seen_cids: set[str] = set()
             for dcode in directorates_list:
