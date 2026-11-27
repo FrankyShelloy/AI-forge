@@ -242,6 +242,22 @@ def run_all() -> None:
         f"exact={matched_dirs} stem={matched_stem}",
     )
 
+    # 10. Roundcube RU quote header stripping (bot@corp.local писал(а) YYYY-MM-DD HH:MM:)
+    from app.email_service import clean_expert_reply
+
+    rc_raw = (
+        "По разъяснению Службы качества: лимит компенсации — до 3 000 руб.\n\n"
+        "bot@corp.local писал(а) 2026-11-28 02:46:\n"
+        "> Поступил новый вопрос сотрудника.\n"
+        "> Вопрос: Про такси."
+    )
+    rc_clean = clean_expert_reply(rc_raw)
+    check(
+        "UNIT_ROUNDCUBE_RU_QUOTE_STRIPPING",
+        "3 000 руб." in rc_clean and "писал(а)" not in rc_clean and "Поступил новый" not in rc_clean,
+        f"clean={rc_clean!r}",
+    )
+
     print(f"\nUNIT v2.3 SUMMARY: {passed}/{total} passed")
     if passed != total:
         sys.exit(1)

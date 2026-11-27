@@ -27,7 +27,8 @@ TICKET_CODE_RE = re.compile(r"\[?(QA-\d{4}-\d{4})\]?", re.I)
 
 # Russian + English quote / signature cutoffs (including Roundcube RU/EN formats)
 RU_QUOTE_PATTERNS = [
-    re.compile(r"^\s*\d{1,4}[./-]\d{1,2}[./-]\d{2,4}.*?(?:написал|пишет|wrote).*?:", re.I | re.M),
+    re.compile(r"^\s*\d{1,4}[./-]\d{1,2}[./-]\d{2,4}.*?(?:написал|писал|пишет|wrote).*?:", re.I | re.M),
+    re.compile(r"^\s*.+?(?:писал\(а\)|написал\(а\)|писала|писал|написала|написал|пишет|wrote)\s+\d{1,4}[./-]\d{1,2}[./-]\d{2,4}.*?:\s*$", re.I | re.M),
     re.compile(r"^\s*On\s+.+?wrote:\s*$", re.I | re.M),
     re.compile(r"^\s*[-_]{2,}\s*(?:Исходное сообщение|Original Message|Пересылаемое сообщение)", re.I | re.M),
     re.compile(r"^\s*(?:От|From):\s+.+\n\s*(?:Отправлено|Sent|Дата|Date):", re.I | re.M),
