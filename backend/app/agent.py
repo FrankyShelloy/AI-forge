@@ -207,7 +207,11 @@ def _build_queries(user_message: str, history: list[dict[str, Any]]) -> tuple[st
         clar_notes.append(msg)
         return orig_q, f"{orig_q} (Уточнения сотрудника: {'; '.join(clar_notes)})"
 
-    if len(msg.split()) <= 4 and last_user:
+    if (
+        len(msg.split()) <= 4
+        and last_user
+        and (not last_assistant or last_assistant.get("outcome") not in {"off_topic", "out_of_scope", "escalated"})
+    ):
         return last_user["content"].strip(), f"{last_user['content']} {msg}"
     return msg, msg
 
@@ -410,13 +414,15 @@ class RegulationAgent:
 
     # --- Node 2: Glossary Expansion + Hybrid Retrieval ---
     async def _node_retrieve(self, state: AgentState) -> dict[str, Any]:
+        docs_meta = self.db.list_indexed_docs()
+        total_chunks = sum(int(d["chunk_count"]) for d in docs_meta) or 611
         self._emit(
             state,
             "status",
             {
                 "action": "retrieving",
                 "directorate": "",
-                "reasoning": "Гибридный поиск по 611 пунктам регламентов и FAQ...",
+                "reasoning": f"Гибридный поиск по {total_chunks} пунктам регламентов ({len(docs_meta)} док.) и FAQ...",
             },
         )
         t0 = time.perf_counter()
@@ -429,13 +435,15 @@ class RegulationAgent:
         if len(dirs) >= 2:
             dirs_list = dirs
         elif is_multi:
-            dirs_list = ["DBRCT", "TECH_DIR", "IB"]
+            all_dirs = list(dict.fromkeys(["DBRCT", "TECH_DIR", "IB", *(d["directorate"] for d in docs_meta)]))
+            dirs_list = all_dirs
         elif len(dirs) == 1:
             dir_filter = dirs[0]
-        elif active_dir in {"DBRCT", "TECH_DIR", "IB"} and state.get("clarification_round", 0) > 0:
+        elif active_dir and active_dir not in {"MULTI", "ALL", "UNKNOWN"} and state.get("clarification_round", 0) > 0:
             dir_filter = active_dir
 
-        reg_items, faq_items, emb_tokens, emb_cost, matched_glossary = self.retriever.search(
+        reg_items, faq_items, emb_tokens, emb_cost, matched_glossary = await asyncio.to_thread(
+            self.retriever.search,
             search_query,
             directorate_filter=dir_filter,
             directorates_list=dirs_list,
@@ -593,18 +601,20 @@ JSON-схема:
                     decision.action = "escalate"
                     decision.reasoning = f"Достигнут лимит уточняющих вопросов ({max_rounds} итерации) без определения дирекции."
                 else:
-                    dir_labels_map = {
+                    dir_labels_map: dict[str, str] = {
                         "DBRCT": "ДБРЦТ",
                         "TECH_DIR": "Техническая дирекция",
                         "IB": "Дирекция ИБ",
                     }
-                    present_labels = [dir_labels_map[d] for d in ("DBRCT", "TECH_DIR", "IB") if d in ambiguous_dirs]
+                    for ddoc in docs_list:
+                        dir_labels_map.setdefault(ddoc["directorate"], ddoc["directorate_label"])
+                    present_labels = [dir_labels_map[d] for d in dir_labels_map if d in ambiguous_dirs]
                     decision.action = "clarify"
-                    decision.clarification_question = (
+                    decision.clarification_question = decision.clarification_question or (
                         f"Правила и сроки по этому вопросу различаются между подразделениями ({', '.join(present_labels)}). "
                         f"Пожалуйста, уточните применимую дирекцию (шаг уточнения {clar_round + 1} из {max_rounds}):"
                     )
-                    decision.clarification_options = [
+                    decision.clarification_options = decision.clarification_options or [
                         *present_labels,
                         f"Комплексный проект ({' + '.join(present_labels[:2])})",
                         "Не знаю подразделение — покажите варианты",
@@ -1070,11 +1080,14 @@ JSON-схема:
                 await queue.put(None)
 
         graph_task = asyncio.create_task(_execute_graph())
+        ttft_ms = 0
         try:
             while True:
                 item = await queue.get()
                 if item is None:
                     break
+                if item.get("event") == "delta" and ttft_ms == 0:
+                    ttft_ms = int((time.perf_counter() - t0) * 1000)
                 yield item
             state = await graph_task
         finally:
@@ -1092,6 +1105,8 @@ JSON-схема:
         embedding_tokens = int(state.get("embedding_tokens") or 0)
         total_cost = float(state.get("cost_rub") or 0.0)
         latency_ms = int((time.perf_counter() - t0) * 1000)
+        if ttft_ms == 0:
+            ttft_ms = latency_ms
 
         saved_msg = self.db.add_message(
             sid,
@@ -1109,6 +1124,7 @@ JSON-схема:
             embedding_tokens=embedding_tokens,
             cost_rub=round(total_cost, 6),
             latency_ms=latency_ms,
+            ttft_ms=ttft_ms,
         )
 
         primary_doc = citations[0]["doc_id"] if citations else None
@@ -1130,6 +1146,7 @@ JSON-схема:
             embedding_tokens=embedding_tokens,
             cost_rub=round(total_cost, 6),
             latency_ms=latency_ms,
+            has_conflict=decision.has_conflict,
         )
 
         yield {
@@ -1142,6 +1159,7 @@ JSON-схема:
                     "embedding_tokens": embedding_tokens,
                     "cost_rub": round(total_cost, 6),
                     "latency_ms": latency_ms,
+                    "ttft_ms": ttft_ms,
                 },
             },
         }

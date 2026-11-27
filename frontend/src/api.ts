@@ -119,20 +119,52 @@ export async function syncMailNow(): Promise<{
   ignored_unauth: number;
   error: string | null;
 }> {
-  const res = await fetch("/api/mail/sync", { method: "POST" });
+  const res = await fetch("/api/mail/sync", {
+    method: "POST",
+    headers: clientHeaders(),
+  });
   if (!res.ok) throw new Error("Mail sync failed");
   return res.json();
 }
 
 export async function fetchAnalytics(): Promise<AnalyticsData> {
-  const res = await fetch("/api/analytics");
-  if (!res.ok) throw new Error("Failed to load analytics");
+  const res = await fetch("/api/analytics", {
+    headers: { "X-Quality-Key": getQualityKey() },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Требуется роль Службы качества" }));
+    throw new Error(err.detail || "Failed to load analytics");
+  }
   return res.json();
 }
 
+export async function downloadAnalyticsReport(): Promise<void> {
+  const res = await fetch("/api/analytics/export", {
+    headers: { "X-Quality-Key": getQualityKey() },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Требуется роль Службы качества" }));
+    throw new Error(err.detail || "Не удалось скачать отчёт");
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "softline_quality_report.md";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export async function fetchTickets(): Promise<EscalationTicket[]> {
-  const res = await fetch("/api/tickets");
-  if (!res.ok) throw new Error("Failed to load tickets");
+  const res = await fetch("/api/tickets", {
+    headers: { "X-Quality-Key": getQualityKey() },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Требуется роль Службы качества" }));
+    throw new Error(err.detail || "Failed to load tickets");
+  }
   return res.json();
 }
 

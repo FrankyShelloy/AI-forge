@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { CheckCircle2, KeyRound, ShieldCheck, UserCheck, X } from "lucide-react";
 import {
   deleteSession,
@@ -33,6 +33,8 @@ export default function App() {
   const [streamingText, setStreamingText] = useState("");
   const [streamingStatus, setStreamingStatus] = useState<string | null>(null);
   const [selectedCitation, setSelectedCitation] = useState<Citation | null>(null);
+  const activeSessionRef = useRef<string | null>(null);
+  activeSessionRef.current = currentSessionId;
 
   const [syncingMail, setSyncingMail] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -121,16 +123,22 @@ export default function App() {
   };
 
   const handleSelectSession = async (sid: string) => {
+    activeSessionRef.current = sid;
     setCurrentSessionId(sid);
     setSelectedCitation(null);
+    setStreamingText("");
+    setStreamingStatus(null);
     const msgs = await fetchMessages(sid);
     setMessages(msgs);
   };
 
   const handleNewSession = () => {
+    activeSessionRef.current = null;
     setCurrentSessionId(null);
     setMessages([]);
     setSelectedCitation(null);
+    setStreamingText("");
+    setStreamingStatus(null);
   };
 
   const handleDeleteSession = async (sid: string) => {
@@ -206,17 +214,26 @@ export default function App() {
     };
     setMessages((prev) => [...prev, optimisticUser]);
 
+    const originSid = currentSessionId;
     let activeSid = currentSessionId;
+    const isStillViewing = () =>
+      activeSessionRef.current === activeSid || activeSessionRef.current === originSid;
+
     await streamChat(
       { session_id: currentSessionId, message: text, user_email: userEmail },
       {
         onSession: (sid) => {
           activeSid = sid;
-          setCurrentSessionId(sid);
+          if (activeSessionRef.current === originSid) {
+            activeSessionRef.current = sid;
+            setCurrentSessionId(sid);
+          }
         },
         onStatus: (info) => {
+          if (!isStillViewing()) return;
+          const chunkCount = health?.chunks_indexed ?? 611;
           const map: Record<string, string> = {
-            retrieving: "Гибридный поиск по 611 пунктам регламентов и базе FAQ...",
+            retrieving: `Гибридный поиск по ${chunkCount} пунктам регламентов и базе FAQ...`,
             clarify: "Выявлена зависимость от дирекции — формулирую уточнение...",
             escalate: "Нормы нет в базе — отправляю реальное письмо в Службу качества...",
             complex_answer: "Сопоставляю требования нескольких дирекций раздельно...",
@@ -226,30 +243,35 @@ export default function App() {
           setStreamingStatus(map[info.action] || "Формирую ответ...");
         },
         onDelta: (piece) => {
+          if (!isStillViewing()) return;
           setStreamingText((prev) => prev + piece);
         },
         onDone: (finalMsg) => {
-          setMessages((prev) => [...prev, finalMsg]);
-          setStreamingText("");
-          setStreamingStatus(null);
+          if (isStillViewing()) {
+            setMessages((prev) => [...prev, finalMsg]);
+            setStreamingText("");
+            setStreamingStatus(null);
+            if (activeSid) setCurrentSessionId(activeSid);
+          }
           setIsSending(false);
           loadSessions();
-          if (activeSid) setCurrentSessionId(activeSid);
         },
         onError: (detail) => {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `err-${Date.now()}`,
-              session_id: activeSid || "",
-              role: "assistant",
-              content: `Произошла ошибка при обработке запроса: ${detail}`,
-              citations: [],
-              clarification_options: [],
-            },
-          ]);
-          setStreamingText("");
-          setStreamingStatus(null);
+          if (isStillViewing()) {
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: `err-${Date.now()}`,
+                session_id: activeSid || "",
+                role: "assistant",
+                content: `Произошла ошибка при обработке запроса: ${detail}`,
+                citations: [],
+                clarification_options: [],
+              },
+            ]);
+            setStreamingText("");
+            setStreamingStatus(null);
+          }
           setIsSending(false);
         },
       }
@@ -311,6 +333,7 @@ export default function App() {
               onSyncMail={handleSyncMail}
               syncingMail={syncingMail}
               onManualEscalate={handleManualEscalate}
+              health={health}
             />
             <SourceDrawer
               citation={selectedCitation}
@@ -342,6 +365,7 @@ export default function App() {
               setPinError(null);
               setRoleModalOpen(true);
             }}
+            onQuickUnlockQuality={() => handleUnlockQuality("Quality2026")}
           />
         )}
       </div>

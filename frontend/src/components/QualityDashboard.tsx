@@ -2,19 +2,24 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   Award,
+  BookOpen,
   Calculator,
   CheckCircle2,
   Clock,
   Download,
   FileText,
+  KeyRound,
   Lock,
   Mail,
   RefreshCw,
+  Repeat,
   ShieldAlert,
   TrendingUp,
   Upload,
+  UserCheck,
 } from "lucide-react";
 import {
+  downloadAnalyticsReport,
   fetchAnalytics,
   fetchFaqs,
   fetchTickets,
@@ -28,6 +33,7 @@ interface Props {
   syncingMail: boolean;
   isQualityRole: boolean;
   onRequestQualityRole: () => void;
+  onQuickUnlockQuality: () => Promise<void>;
 }
 
 export const QualityDashboard: React.FC<Props> = ({
@@ -35,29 +41,81 @@ export const QualityDashboard: React.FC<Props> = ({
   syncingMail,
   isQualityRole,
   onRequestQualityRole,
+  onQuickUnlockQuality,
 }) => {
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [tickets, setTickets] = useState<EscalationTicket[]>([]);
   const [faqs, setFaqs] = useState<FaqEntry[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadMsg, setUploadMsg] = useState<string | null>(null);
-  const [dailyVolume, setDailyVolume] = useState(200);
+  // Official Softline brief baseline (`почта.txt`): 100–300 queries/month (50–300 man-hours/month)
+  const [monthlyVolume, setMonthlyVolume] = useState(200);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const loadAll = async () => {
-    const [a, t, f] = await Promise.all([
-      fetchAnalytics(),
-      fetchTickets(),
-      fetchFaqs(),
-    ]);
-    setAnalytics(a);
-    setTickets(t);
-    setFaqs(f);
+    if (!isQualityRole) return;
+    try {
+      const [a, t, f] = await Promise.all([
+        fetchAnalytics(),
+        fetchTickets(),
+        fetchFaqs(),
+      ]);
+      setAnalytics(a);
+      setTickets(t);
+      setFaqs(f);
+    } catch (err: unknown) {
+      setUploadMsg(err instanceof Error ? err.message : "Ошибка загрузки аналитики");
+    }
   };
 
   useEffect(() => {
-    loadAll();
-  }, []);
+    if (isQualityRole) {
+      loadAll();
+    } else {
+      setAnalytics(null);
+      setTickets([]);
+    }
+  }, [isQualityRole]);
+
+  // Privacy & RBAC Gate: Analytics & Employee Tickets contain employee questions/emails -> Quality role only!
+  if (!isQualityRole) {
+    return (
+      <div className="flex-1 overflow-y-auto bg-[#F6F7FB] softline-aura p-6 flex items-center justify-center">
+        <div className="max-w-lg w-full bg-white rounded-3xl border border-slate-200/90 shadow-lg p-8 text-center space-y-5 animate-fadeSlideUp">
+          <div className="w-14 h-14 rounded-2xl bg-indigo-50 border border-indigo-200 text-indigo-600 flex items-center justify-center mx-auto">
+            <Lock className="w-7 h-7" />
+          </div>
+          <div className="space-y-2">
+            <h1 className="text-lg font-bold text-slate-900">
+              Панель Службы качества защищена политикой приватности (RBAC)
+            </h1>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Журнал обращений (<code className="font-mono">/api/tickets</code>), аналитика вопросов сотрудников (
+              <code className="font-mono">/api/analytics</code>), аудит безопасности и управление базой FAQ доступны{" "}
+              <strong>только уполномоченным сотрудникам Службы качества</strong> (заголовок{" "}
+              <code className="font-mono">X-Quality-Key</code>), чтобы сохранять приватность 1-на-1 чатов.
+            </p>
+          </div>
+          <div className="pt-1 flex flex-col sm:flex-row items-center justify-center gap-2.5">
+            <button
+              onClick={onQuickUnlockQuality}
+              className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold inline-flex items-center justify-center gap-2 shadow-sm transition"
+            >
+              <UserCheck className="w-4 h-4" />
+              Войти как Служба качества в 1 клик (демо: Quality2026)
+            </button>
+            <button
+              onClick={onRequestQualityRole}
+              className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition"
+            >
+              <KeyRound className="w-3.5 h-3.5" />
+              Ввести ключ вручную
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const handleSync = async () => {
     await onSyncMail();
@@ -65,10 +123,6 @@ export const QualityDashboard: React.FC<Props> = ({
   };
 
   const handleToggleFaq = async (faq: FaqEntry) => {
-    if (!isQualityRole) {
-      onRequestQualityRole();
-      return;
-    }
     try {
       const next = faq.status === "active" ? "disabled" : "active";
       await toggleFaqStatus(faq.id, next);
@@ -97,12 +151,19 @@ export const QualityDashboard: React.FC<Props> = ({
     }
   };
 
+  const handleExportMd = async () => {
+    try {
+      await downloadAnalyticsReport();
+    } catch (err: unknown) {
+      setUploadMsg(err instanceof Error ? err.message : "Ошибка экспорта");
+    }
+  };
+
   const s = analytics?.summary;
-  const costPerReq = s?.avg_cost_rub && s.avg_cost_rub > 0 ? s.avg_cost_rub : 0.0458;
-  const monthlyReqs = dailyVolume * 22; // 22 working days/month
-  const monthlyApiRub = Math.round(monthlyReqs * costPerReq);
-  // Softline brief baseline: 30–120 min (avg 45 min conservative) saved per query!
-  const savedHoursMonth = Math.round((monthlyReqs * 45) / 60);
+  const costPerReq = s?.avg_cost_rub && s.avg_cost_rub > 0 ? s.avg_cost_rub : 0.0516;
+  const monthlyApiRub = Math.max(1, Math.round(monthlyVolume * costPerReq));
+  // Softline brief (`почта.txt`): manual search takes 30–120 min (avg 60 min conservative = 1 h; 100–300 req/mo = 50–300 h/mo)
+  const savedHoursMonth = Math.round((monthlyVolume * 45) / 60);
 
   const outcomeRows = [
     {
@@ -138,7 +199,7 @@ export const QualityDashboard: React.FC<Props> = ({
               Аналитика и Центр управления Службы качества
             </h1>
             <p className="text-xs text-slate-500 mt-0.5">
-              Замкнутый цикл знаний, сигналы на актуализацию регламентов, аудит безопасности и экономика эксплуатации
+              Замкнутый цикл знаний, сигналы на актуализацию регламентов, повторяющиеся темы, аудит безопасности и экономика
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -149,30 +210,19 @@ export const QualityDashboard: React.FC<Props> = ({
               className="hidden"
               onChange={handleUpload}
             />
-            <a
-              href="/api/analytics/export"
-              download="softline_quality_report.md"
+            <button
+              onClick={handleExportMd}
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white border border-slate-200 hover:border-slate-300 text-xs font-semibold text-slate-700 shadow-sm transition"
             >
               <Download className="w-3.5 h-3.5 text-slate-500" />
               Скачать отчёт (.md)
-            </a>
+            </button>
             <button
-              onClick={() => {
-                if (!isQualityRole) {
-                  onRequestQualityRole();
-                  return;
-                }
-                fileRef.current?.click();
-              }}
+              onClick={() => fileRef.current?.click()}
               disabled={uploading}
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white border border-slate-200 hover:border-brand-400 text-xs font-semibold text-slate-700 shadow-sm transition"
             >
-              {isQualityRole ? (
-                <Upload className="w-3.5 h-3.5 text-brand-600" />
-              ) : (
-                <Lock className="w-3.5 h-3.5 text-slate-400" />
-              )}
+              <Upload className="w-3.5 h-3.5 text-brand-600" />
               {uploading ? "Индексация..." : "Загрузить .docx"}
             </button>
             <button
@@ -246,13 +296,22 @@ export const QualityDashboard: React.FC<Props> = ({
                 {s.avg_latency_ms ? `${(s.avg_latency_ms / 1000).toFixed(1)} с` : "—"}
               </div>
               <div className="text-[11px] text-slate-500 mt-1">
-                ~<strong className="font-mono text-slate-800">{costPerReq.toFixed(4)} ₽</strong> / запрос
+                {s.total_queries > 0 ? (
+                  <>
+                    Средняя цена:{" "}
+                    <strong className="font-mono text-slate-800">
+                      ~{s.avg_cost_rub.toFixed(4)} ₽
+                    </strong>
+                  </>
+                ) : (
+                  <>Ориентир: ~0.0516 ₽ / запрос</>
+                )}
               </div>
             </div>
           </div>
         )}
 
-        {/* Row 2: Visual Outcomes Chart + Interactive ROI & Cost Calculator */}
+        {/* Row 2: Outcome Distribution + Monthly ROI Simulator aligned with Softline brief */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-4">
             <h2 className="text-sm font-bold text-slate-900">
@@ -268,7 +327,9 @@ export const QualityDashboard: React.FC<Props> = ({
                   <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
                     <div
                       className={`h-full rounded-full transition-all duration-500 ${row.color}`}
-                      style={{ width: `${row.value === 0 ? 0 : Math.max(6, (row.value / maxOutcome) * 100)}%` }}
+                      style={{
+                        width: `${row.value === 0 ? 0 : Math.max(6, (row.value / maxOutcome) * 100)}%`,
+                      }}
                     />
                   </div>
                 </div>
@@ -294,7 +355,7 @@ export const QualityDashboard: React.FC<Props> = ({
             )}
           </div>
 
-          {/* Interactive Business ROI & Economics Simulator */}
+          {/* Interactive Business ROI & Economics Simulator (Official Brief: 100–300 req/month) */}
           <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col justify-between space-y-4">
             <div>
               <div className="flex items-center justify-between mb-1">
@@ -303,27 +364,27 @@ export const QualityDashboard: React.FC<Props> = ({
                   Калькулятор экономики и бизнес-эффекта (ROI)
                 </h2>
                 <span className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded-md bg-rose-50 text-brand-700">
-                  {dailyVolume} запр./день
+                  {monthlyVolume.toLocaleString("ru-RU")} запр./мес
                 </span>
               </div>
               <p className="text-[11px] text-slate-500">
-                По данным ТЗ Софтлайн: ручной поиск занимает 30–120 мин (в расчёте консервативно 45 мин)
+                По данным ТЗ Софтлайн: 100–300 запросов/мес × 30–120 мин (50–300 чел.-ч/мес; в расчёте консервативно 45 мин)
               </p>
 
               <div className="mt-4">
                 <input
                   type="range"
-                  min={50}
-                  max={500}
-                  step={25}
-                  value={dailyVolume}
-                  onChange={(e) => setDailyVolume(Number(e.target.value))}
+                  min={100}
+                  max={3000}
+                  step={50}
+                  value={monthlyVolume}
+                  onChange={(e) => setMonthlyVolume(Number(e.target.value))}
                   className="w-full accent-brand-600 cursor-pointer"
                 />
                 <div className="flex justify-between text-[10px] text-slate-400 font-mono">
-                  <span>50/день</span>
-                  <span>200/день (цель ТЗ)</span>
-                  <span>500/день</span>
+                  <span>100–300/мес (база ТЗ)</span>
+                  <span>1 500/мес</span>
+                  <span>3 000/мес (масштаб)</span>
                 </div>
               </div>
             </div>
@@ -332,7 +393,7 @@ export const QualityDashboard: React.FC<Props> = ({
               <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/80">
                 <div className="text-[10px] text-slate-500">Запросов / мес.</div>
                 <div className="text-base font-bold text-slate-900 mt-0.5">
-                  {monthlyReqs.toLocaleString("ru-RU")}
+                  {monthlyVolume.toLocaleString("ru-RU")}
                 </div>
               </div>
               <div className="p-3 rounded-xl bg-emerald-50/80 border border-emerald-200">
@@ -351,64 +412,126 @@ export const QualityDashboard: React.FC<Props> = ({
           </div>
         </div>
 
-        {/* Row 3: Revision Signals + Security Audit & Popular Sections */}
+        {/* Row 3: Revision Signals + Document Demand & Recurring Topics (Full FR-14 Coverage) */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm">
-            <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2 mb-3">
-              <AlertCircle className="w-4 h-4 text-amber-500" />
-              Сигналы на пересмотр регламентов
-            </h2>
-            {!analytics?.revision_signals.length ? (
-              <div className="text-xs text-slate-400 py-5 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200">
-                Пробелов пока не выявлено. При эскалации вопроса в Службу качества здесь автоматически сформируется рекомендация на пересмотр.
-              </div>
-            ) : (
-              <div className="space-y-2.5">
-                {analytics.revision_signals.map((sig, i) => (
-                  <div
-                    key={i}
-                    className={`p-3.5 rounded-xl border text-xs ${
-                      sig.severity === "high"
-                        ? "bg-rose-50 border-rose-200 text-rose-950"
-                        : "bg-amber-50/80 border-amber-200 text-amber-950"
-                    }`}
-                  >
-                    <div className="font-bold">{sig.topic}</div>
-                    <div className="text-[11px] mt-0.5 opacity-90">{sig.reason}</div>
-                    <div className="text-[11px] mt-1.5 font-semibold">
-                      Эскалаций: {sig.escalations} · Обращений: {sig.total_asks}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="space-y-4">
-            <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm">
+          <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-4">
+            <div>
               <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2 mb-3">
-                <FileText className="w-4 h-4 text-blue-600" />
-                Востребованные разделы регламентов
+                <AlertCircle className="w-4 h-4 text-amber-500" />
+                Сигналы на пересмотр регламентов и конфликты
               </h2>
-              {!analytics?.popular_sections.length ? (
-                <div className="text-xs text-slate-400 py-3">
-                  Статистика по разделам появится после первых вопросов в чате.
+              {!analytics?.revision_signals.length ? (
+                <div className="text-xs text-slate-400 py-4 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                  Пробелов пока не выявлено. При эскалации вопроса или конфликте регламента с FAQ здесь сформируется рекомендация на пересмотр.
                 </div>
               ) : (
-                <div className="space-y-2">
-                  {analytics.popular_sections.map((sec, i) => (
+                <div className="space-y-2.5">
+                  {analytics.revision_signals.map((sig, i) => (
+                    <div
+                      key={i}
+                      className={`p-3.5 rounded-xl border text-xs ${
+                        sig.severity === "high"
+                          ? "bg-rose-50 border-rose-200 text-rose-950"
+                          : "bg-amber-50/80 border-amber-200 text-amber-950"
+                      }`}
+                    >
+                      <div className="font-bold">{sig.topic}</div>
+                      <div className="text-[11px] mt-0.5 opacity-90">{sig.reason}</div>
+                      <div className="text-[11px] mt-1.5 font-semibold">
+                        Проблемных/эскалаций: {sig.escalations} · Обращений: {sig.total_asks}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="pt-3 border-t border-slate-100">
+              <h3 className="text-xs font-bold text-slate-800 flex items-center gap-1.5 mb-2.5">
+                <Repeat className="w-3.5 h-3.5 text-indigo-600" />
+                Повторяющиеся запросы сотрудников
+              </h3>
+              {!analytics?.recurring_topics.length ? (
+                <div className="text-xs text-slate-400">Появится после первых обращений в чате.</div>
+              ) : (
+                <div className="space-y-1.5">
+                  {analytics.recurring_topics.slice(0, 5).map((rt, i) => (
                     <div
                       key={i}
                       className="flex items-center justify-between gap-2 text-xs py-1.5 border-b border-slate-100 last:border-0"
                     >
-                      <span className="text-slate-700 truncate">{sec.section}</span>
-                      <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 font-semibold shrink-0">
-                        {sec.hits}
+                      <span className="text-slate-700 truncate">{rt.topic}</span>
+                      <span className="px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 font-semibold shrink-0 text-[11px]">
+                        {rt.count}×
                       </span>
                     </div>
                   ))}
                 </div>
               )}
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            {/* Document demand + Popular & Problematic sections */}
+            <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-4">
+              <div>
+                <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2 mb-2.5">
+                  <BookOpen className="w-4 h-4 text-brand-600" />
+                  Востребованность регламентов
+                </h2>
+                <div className="space-y-1.5">
+                  {(analytics?.doc_demand || []).map((dd) => (
+                    <div
+                      key={dd.doc_id}
+                      className="flex items-center justify-between gap-2 text-xs py-1 border-b border-slate-100 last:border-0"
+                    >
+                      <span className="text-slate-700 truncate">
+                        <strong className="text-slate-900">{dd.directorate_label}</strong> · {dd.doc_title}
+                      </span>
+                      <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 font-semibold shrink-0">
+                        {dd.hits}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="pt-3 border-t border-slate-100">
+                <h3 className="text-xs font-bold text-slate-800 flex items-center gap-1.5 mb-2">
+                  <FileText className="w-3.5 h-3.5 text-blue-600" />
+                  Востребованные и проблемные разделы
+                </h3>
+                {!analytics?.popular_sections.length && !analytics?.problematic_sections.length ? (
+                  <div className="text-xs text-slate-400">
+                    Статистика по разделам появится после первых вопросов.
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {(analytics?.problematic_sections || []).slice(0, 3).map((sec, i) => (
+                      <div
+                        key={`p-${i}`}
+                        className="flex items-center justify-between gap-2 text-xs py-1 text-amber-900 bg-amber-50/70 px-2 rounded-lg"
+                      >
+                        <span className="truncate">⚠ {sec.section}</span>
+                        <span className="font-mono font-bold shrink-0 text-[11px]">
+                          проблем: {sec.problem_count}
+                        </span>
+                      </div>
+                    ))}
+                    {(analytics?.popular_sections || []).slice(0, 4).map((sec, i) => (
+                      <div
+                        key={`pop-${i}`}
+                        className="flex items-center justify-between gap-2 text-xs py-1 border-b border-slate-100 last:border-0"
+                      >
+                        <span className="text-slate-700 truncate">{sec.section}</span>
+                        <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 font-semibold shrink-0">
+                          {sec.hits}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm">
@@ -462,7 +585,7 @@ export const QualityDashboard: React.FC<Props> = ({
           </div>
           {tickets.length === 0 ? (
             <div className="text-xs text-slate-400 py-5 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200">
-              Обращений пока нет. Задайте в чате вопрос, отсутствующий в 4 регламентах, чтобы протестировать реальную отправку письма.
+              Обращений пока нет. Задайте в чате вопрос, отсутствующий в загруженных регламентах, чтобы протестировать реальную отправку письма.
             </div>
           ) : (
             <div className="overflow-x-auto">

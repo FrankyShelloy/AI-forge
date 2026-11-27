@@ -2,38 +2,42 @@
   {
     "test": "S2_AMBIGUOUS_COMPLEX_BUDGET_LEADTIME",
     "outcome": "clarify",
-    "prompt_tokens": 2909,
-    "completion_tokens": 330,
+    "prompt_tokens": 2911,
+    "completion_tokens": 227,
     "embedding_tokens": 45,
-    "cost_rub": 0.027792,
-    "latency_ms": 9235
+    "cost_rub": 0.025095,
+    "latency_ms": 3968,
+    "ttft_ms": 3967
   },
   {
     "test": "S2_AMBIGUOUS_COMPLEX_BUDGET_LEADTIME",
     "outcome": "complex_answered",
-    "prompt_tokens": 7184,
-    "completion_tokens": 534,
+    "prompt_tokens": 7185,
+    "completion_tokens": 538,
     "embedding_tokens": 45,
-    "cost_rub": 0.060938,
-    "latency_ms": 10421
+    "cost_rub": 0.061049,
+    "latency_ms": 8845,
+    "ttft_ms": 4097
   },
   {
     "test": "S2_DONT_KNOW_DIRECTORATE",
     "outcome": "clarify",
     "prompt_tokens": 3028,
-    "completion_tokens": 147,
+    "completion_tokens": 154,
     "embedding_tokens": 20,
-    "cost_rub": 0.023685,
-    "latency_ms": 7000
+    "cost_rub": 0.023869,
+    "latency_ms": 4395,
+    "ttft_ms": 4394
   },
   {
     "test": "S2_DONT_KNOW_DIRECTORATE",
     "outcome": "answered",
     "prompt_tokens": 8857,
-    "completion_tokens": 943,
+    "completion_tokens": 927,
     "embedding_tokens": 20,
-    "cost_rub": 0.082619,
-    "latency_ms": 18713
+    "cost_rub": 0.082198,
+    "latency_ms": 28796,
+    "ttft_ms": 4725
   },
   {
     "test": "S2_MAX_3_CLARIFICATIONS_ESCALATE",
@@ -42,123 +46,135 @@
     "completion_tokens": 147,
     "embedding_tokens": 20,
     "cost_rub": 0.02363,
-    "latency_ms": 6313
+    "latency_ms": 7448,
+    "ttft_ms": 7447
   },
   {
     "test": "S2_MAX_3_CLARIFICATIONS_ESCALATE",
     "outcome": "clarify",
     "prompt_tokens": 3136,
-    "completion_tokens": 258,
+    "completion_tokens": 314,
     "embedding_tokens": 20,
-    "cost_rub": 0.027256,
-    "latency_ms": 4822
+    "cost_rub": 0.02873,
+    "latency_ms": 29667,
+    "ttft_ms": 29666
   },
   {
     "test": "S2_MAX_3_CLARIFICATIONS_ESCALATE",
     "outcome": "clarify",
-    "prompt_tokens": 3240,
-    "completion_tokens": 153,
+    "prompt_tokens": 3215,
+    "completion_tokens": 349,
     "embedding_tokens": 20,
-    "cost_rub": 0.025172,
-    "latency_ms": 6095
+    "cost_rub": 0.030166,
+    "latency_ms": 12751,
+    "ttft_ms": 12750
   },
   {
     "test": "S2_MAX_3_CLARIFICATIONS_ESCALATE",
     "outcome": "escalated",
-    "prompt_tokens": 3350,
-    "completion_tokens": 267,
+    "prompt_tokens": 3300,
+    "completion_tokens": 271,
     "embedding_tokens": 20,
-    "cost_rub": 0.028889,
-    "latency_ms": 6279
+    "cost_rub": 0.028668,
+    "latency_ms": 5458,
+    "ttft_ms": 5457
   },
   {
     "test": "S1_FIND_DOCUMENT_ONLY",
     "outcome": "answered",
-    "prompt_tokens": 3022,
-    "completion_tokens": 181,
-    "embedding_tokens": 46,
-    "cost_rub": 0.024612,
-    "latency_ms": 3868
+    "prompt_tokens": 2849,
+    "completion_tokens": 188,
+    "embedding_tokens": 54,
+    "cost_rub": 0.023689,
+    "latency_ms": 7331,
+    "ttft_ms": 7330
   },
   {
     "test": "S1_IB_SLA_PRIORITY",
     "outcome": "answered",
-    "prompt_tokens": 4486,
-    "completion_tokens": 395,
-    "embedding_tokens": 46,
-    "cost_rub": 0.039798,
-    "latency_ms": 9240
+    "prompt_tokens": 4499,
+    "completion_tokens": 388,
+    "embedding_tokens": 54,
+    "cost_rub": 0.03972,
+    "latency_ms": 15507,
+    "ttft_ms": 7400
   },
   {
     "test": "S1_START_WITHOUT_CONTRACT_DBRCT",
     "outcome": "answered",
     "prompt_tokens": 4758,
-    "completion_tokens": 514,
+    "completion_tokens": 489,
     "embedding_tokens": 72,
-    "cost_rub": 0.044776,
-    "latency_ms": 10524
+    "cost_rub": 0.044118,
+    "latency_ms": 18175,
+    "ttft_ms": 8844
   },
   {
     "test": "S1_START_WITHOUT_ESTIMATE_IB",
     "outcome": "answered",
-    "prompt_tokens": 3711,
-    "completion_tokens": 318,
-    "embedding_tokens": 35,
-    "cost_rub": 0.032683,
-    "latency_ms": 7310
+    "prompt_tokens": 3570,
+    "completion_tokens": 361,
+    "embedding_tokens": 43,
+    "cost_rub": 0.032917,
+    "latency_ms": 13443,
+    "ttft_ms": 6200
   },
   {
     "test": "S1_SUBCONTRACTOR_TECHDIR",
     "outcome": "answered",
     "prompt_tokens": 3782,
-    "completion_tokens": 375,
+    "completion_tokens": 404,
     "embedding_tokens": 64,
-    "cost_rub": 0.034726,
-    "latency_ms": 9039
+    "cost_rub": 0.035489,
+    "latency_ms": 15701,
+    "ttft_ms": 7582
   },
   {
     "test": "EDGE_MISSING_EXTERNAL_DOC",
     "outcome": "answered",
     "prompt_tokens": 3058,
-    "completion_tokens": 310,
+    "completion_tokens": 331,
     "embedding_tokens": 99,
-    "cost_rub": 0.028386,
-    "latency_ms": 7340
+    "cost_rub": 0.028939,
+    "latency_ms": 14463,
+    "ttft_ms": 14462
   },
   {
     "test": "EDGE_OUT_OF_SCOPE_BONUS",
     "outcome": "out_of_scope",
     "prompt_tokens": 2814,
-    "completion_tokens": 226,
+    "completion_tokens": 228,
     "embedding_tokens": 18,
-    "cost_rub": 0.024362,
-    "latency_ms": 5011
+    "cost_rub": 0.024414,
+    "latency_ms": 6049,
+    "ttft_ms": 6048
   },
   {
     "test": "S3_ESCALATE_NO_HALLUCINATION",
     "outcome": "escalated",
-    "prompt_tokens": 3009,
-    "completion_tokens": 249,
+    "prompt_tokens": 3010,
+    "completion_tokens": 311,
     "embedding_tokens": 79,
-    "cost_rub": 0.026407,
-    "latency_ms": 5576
+    "cost_rub": 0.028045,
+    "latency_ms": 11265,
+    "ttft_ms": 11264
   },
   {
     "test": "S3_FAQ_REUSE_PARAPHRASED",
     "outcome": "answered",
-    "prompt_tokens": 3985,
-    "completion_tokens": 311,
+    "prompt_tokens": 3988,
+    "completion_tokens": 327,
     "embedding_tokens": 75,
-    "cost_rub": 0.034397,
-    "latency_ms": 8441
+    "cost_rub": 0.034837,
+    "latency_ms": 15620
   },
   {
     "test": "CONFLICT_REGULATION_OVERRIDES_FAQ",
     "outcome": "answered",
-    "prompt_tokens": 5470,
-    "completion_tokens": 710,
+    "prompt_tokens": 5490,
+    "completion_tokens": 757,
     "embedding_tokens": 51,
-    "cost_rub": 0.054523,
-    "latency_ms": 14696
+    "cost_rub": 0.05589,
+    "latency_ms": 25121
   }
 ]

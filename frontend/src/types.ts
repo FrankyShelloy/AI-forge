@@ -41,6 +41,7 @@ export interface ChatMessage {
   embedding_tokens?: number;
   cost_rub?: number;
   latency_ms?: number;
+  ttft_ms?: number;
   created_at?: string;
 }
 
@@ -127,6 +128,7 @@ export interface AnalyticsData {
     answered: number;
     clarified: number;
     escalated: number;
+    conflicts_detected?: number;
     out_of_scope_or_refused: number;
     resolution_rate_pct: number;
     tickets_total: number;
@@ -156,6 +158,12 @@ export interface AnalyticsData {
   }>;
   popular_sections: Array<{
     section: string;
+    hits: number;
+  }>;
+  doc_demand: Array<{
+    doc_id: string;
+    doc_title: string;
+    directorate_label: string;
     hits: number;
   }>;
   revision_signals: Array<{

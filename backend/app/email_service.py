@@ -8,6 +8,7 @@ import imaplib
 import logging
 import re
 import ssl
+import threading
 from email.header import decode_header
 from email.message import EmailMessage
 from email.utils import make_msgid, parseaddr
@@ -103,6 +104,7 @@ class EmailHITLService:
         self.settings = settings
         self.db = db
         self.retriever = retriever
+        self._imap_lock = threading.Lock()
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
 
@@ -185,7 +187,15 @@ class EmailHITLService:
         return ticket
 
     def _poll_imap_sync(self) -> dict[str, Any]:
-        """Synchronously check IMAP INBOX for verified Quality Service replies and index them."""
+        """Synchronously check IMAP INBOX for verified Quality Service replies (serialized via lock)."""
+        if not self._imap_lock.acquire(blocking=False):
+            return {"checked": 0, "processed": 0, "ignored_unauth": 0, "error": None, "skipped_busy": True}
+        try:
+            return self._poll_imap_locked()
+        finally:
+            self._imap_lock.release()
+
+    def _poll_imap_locked(self) -> dict[str, Any]:
         processed = 0
         ignored_unauth = 0
         checked = 0
@@ -250,6 +260,8 @@ class EmailHITLService:
                     raw_body = _extract_plain_body(msg)
 
                 if not ticket:
+                    # Mark unmatched/system emails as Seen so IMAP doesn't re-fetch them every 10s forever
+                    mail.store(num, "+FLAGS", "\\Seen")
                     continue
 
                 # Security whitelist check: ONLY authorized Quality Service addresses can enrich KB!

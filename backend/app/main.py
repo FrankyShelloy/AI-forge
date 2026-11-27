@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -30,11 +33,27 @@ retriever = HybridRetriever(settings, db)
 email_service = EmailHITLService(settings, db, retriever)
 agent = RegulationAgent(settings, db, retriever, email_service)
 
+# Lightweight in-memory sliding-window rate limiter for SMTP/IMAP endpoints
+_rate_buckets: dict[str, deque[float]] = defaultdict(deque)
+
+
+def _check_rate_limit(bucket_key: str, max_calls: int, window_sec: float = 60.0) -> None:
+    now = time.monotonic()
+    q = _rate_buckets[bucket_key]
+    while q and (now - q[0]) > window_sec:
+        q.popleft()
+    if len(q) >= max_calls:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Превышен лимит запросов ({max_calls} за {int(window_sec)} с). Повторите чуть позже.",
+        )
+    q.append(now)
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     try:
-        stats = retriever.bootstrap_index(force_reindex=False)
+        stats = await asyncio.to_thread(retriever.bootstrap_index, False)
         logger.info("Knowledge base ready: %s", stats)
     except Exception as exc:
         logger.error("Initial KB bootstrap error (will retry on demand): %s", exc)
@@ -46,14 +65,14 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title="Softline Quality AI Agent",
     description="ИИ-агент поиска ответов по корпоративным регламентам (Web UI + DION/Webhook JSON API)",
-    version="2.1.0",
+    version="2.2.0",
     lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -83,9 +102,9 @@ class QualityPinRequest(BaseModel):
 def _require_quality_role(x_quality_key: str, action_desc: str) -> None:
     if (x_quality_key or "").strip() != settings.quality_admin_pin:
         db.log_security_event(
-            event_type="rbac_write_blocked",
+            event_type="rbac_access_blocked",
             actor="employee_ui",
-            detail=f"Отклонена попытка «{action_desc}» без ключа роли Службы качества (RBAC: все читают, пишет только Качество).",
+            detail=f"Отклонена попытка «{action_desc}» без ключа роли Службы качества (RBAC: все читают регламенты, управляет и видит аналитику только Качество).",
         )
         raise HTTPException(
             status_code=403,
@@ -99,11 +118,16 @@ def _check_session_access(session_id: str, client_id: str) -> None:
         return
     cid = (client_id or "default").strip()[:64]
     owner = sess.get("client_id") or "default"
-    if cid != "internal" and owner not in {"default", cid}:
+    if owner != cid:
         raise HTTPException(
             status_code=403,
             detail="Приватный диалог 1-на-1 принадлежит другой пользовательской сессии.",
         )
+
+
+@app.get("/robots.txt", include_in_schema=False)
+async def robots_txt() -> PlainTextResponse:
+    return PlainTextResponse("User-agent: *\nDisallow: /\n", media_type="text/plain")
 
 
 @app.get("/api/health")
@@ -111,7 +135,7 @@ async def health() -> dict[str, Any]:
     docs = db.list_indexed_docs()
     return {
         "status": "ok",
-        "version": "2.1.0",
+        "version": "2.2.0",
         "llm_model": settings.llm_model,
         "embedding_model": settings.embedding_model,
         "docs_indexed": len(docs),
@@ -166,7 +190,7 @@ async def system_models() -> dict[str, Any]:
             "dion_webhook_endpoint": "/api/chat",
             "openapi_docs": "/docs",
             "mail_whitelist": sorted(settings.whitelist_set),
-            "rbac_policy": "Чтение БЗ — все сотрудники (приватные сессии X-Client-Id); изменение БЗ/FAQ — только Служба качества (X-Quality-Key + Email Whitelist).",
+            "rbac_policy": "Чтение регламентов — все сотрудники (строго изолированные сессии X-Client-Id); аналитика, журнал тикетов, управление FAQ и загрузка .docx — только Служба качества (X-Quality-Key + Email Whitelist).",
             "official_regulation_priority": "Официальный регламент всегда главнее FAQ; при расхождении подсвечивается конфликт.",
         },
     }
@@ -245,8 +269,11 @@ async def delete_session(
 @app.post("/api/escalate")
 async def manual_escalate(
     req: ManualEscalateRequest,
+    request: Request,
     x_client_id: str = Header(default="default"),
 ) -> dict[str, Any]:
+    client_ip = request.client.host if request.client else "unknown"
+    _check_rate_limit(f"esc:{x_client_id}:{client_ip}", max_calls=5, window_sec=60.0)
     _check_session_access(req.session_id, x_client_id)
     ticket = await email_service.send_escalation(
         session_id=req.session_id,
@@ -270,13 +297,19 @@ async def manual_escalate(
 
 
 @app.post("/api/mail/sync")
-async def sync_mail_now() -> dict[str, Any]:
+async def sync_mail_now(
+    request: Request,
+    x_client_id: str = Header(default="default"),
+) -> dict[str, Any]:
     """Immediately poll IMAP inbox for verified Quality Service replies."""
+    client_ip = request.client.host if request.client else "unknown"
+    _check_rate_limit(f"sync:{x_client_id}:{client_ip}", max_calls=15, window_sec=60.0)
     return await email_service.sync_inbox_now()
 
 
 @app.get("/api/tickets")
-async def list_tickets() -> list[dict[str, Any]]:
+async def list_tickets(x_quality_key: str = Header(default="")) -> list[dict[str, Any]]:
+    _require_quality_role(x_quality_key, "просмотр журнала обращений сотрудников (tickets)")
     return db.list_tickets(limit=100)
 
 
@@ -296,21 +329,23 @@ async def toggle_faq(
         raise HTTPException(status_code=400, detail="Invalid status")
     db.toggle_faq_status(faq_id, body.status)
     if body.status == "disabled":
-        retriever.remove_faq_entry(faq_id)
+        await asyncio.to_thread(retriever.remove_faq_entry, faq_id)
     else:
         faqs = [f for f in db.list_faqs(active_only=False) if f["id"] == faq_id]
         if faqs:
-            retriever.index_faq_entry(faqs[0])
+            await asyncio.to_thread(retriever.index_faq_entry, faqs[0])
     return {"status": body.status}
 
 
 @app.get("/api/analytics")
-async def get_analytics() -> dict[str, Any]:
+async def get_analytics(x_quality_key: str = Header(default="")) -> dict[str, Any]:
+    _require_quality_role(x_quality_key, "просмотр аналитики Службы качества")
     return build_quality_analytics(db)
 
 
 @app.get("/api/analytics/export")
-async def export_analytics_report() -> PlainTextResponse:
+async def export_analytics_report(x_quality_key: str = Header(default="")) -> PlainTextResponse:
+    _require_quality_role(x_quality_key, "экспорт отчёта Службы качества")
     md = export_quality_report_md(db)
     return PlainTextResponse(
         content=md,
@@ -360,7 +395,7 @@ async def upload_document(
     dest = docs_dir / safe_name
     dest.write_bytes(content)
     try:
-        return retriever.index_uploaded_docx(dest)
+        return await asyncio.to_thread(retriever.index_uploaded_docx, dest)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

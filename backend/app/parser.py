@@ -42,6 +42,17 @@ class ParsedChunk:
     external_doc_refs: list[str] = field(default_factory=list)
 
 
+_CYR_TRANSLIT = str.maketrans(
+    {
+        "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+        "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+        "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+        "ф": "f", "х": "h", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "sch",
+        "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+    }
+)
+
+
 def detect_doc_meta(filename: str, first_line: str) -> tuple[str, str, str, str]:
     """Infer (doc_id, directorate, directorate_label, stage) from filename and title."""
     low = f"{filename} {first_line}".lower()
@@ -53,8 +64,11 @@ def detect_doc_meta(filename: str, first_line: str) -> tuple[str, str, str, str]
         return "ib_presale", "IB", "Дирекция ИБ", "presale"
     if "иб" in low or "информационной безопасности" in low:
         return "ib_project", "IB", "Дирекция ИБ", "project"
-    slug = re.sub(r"[^a-z0-9]+", "_", filename.lower())[:32].strip("_") or "custom_doc"
-    return f"doc_{slug}", "OTHER", Path(filename).stem, "both"
+    stem = Path(filename).stem
+    h6 = hashlib.md5(stem.lower().encode("utf-8")).hexdigest()[:6]
+    translit = stem.lower().translate(_CYR_TRANSLIT)
+    slug = re.sub(r"[^a-z0-9]+", "_", translit)[:24].strip("_") or "custom"
+    return f"doc_{slug}_{h6}", f"CUSTOM_{h6.upper()}", stem, "both"
 
 
 def _extract_table_md(tbl_el: ET.Element) -> str:

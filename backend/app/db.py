@@ -61,6 +61,7 @@ class Database:
                     embedding_tokens INTEGER DEFAULT 0,
                     cost_rub REAL DEFAULT 0.0,
                     latency_ms INTEGER DEFAULT 0,
+                    ttft_ms INTEGER DEFAULT 0,
                     created_at TEXT NOT NULL,
                     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
                 );
@@ -111,6 +112,7 @@ class Database:
                     embedding_tokens INTEGER DEFAULT 0,
                     cost_rub REAL DEFAULT 0.0,
                     latency_ms INTEGER DEFAULT 0,
+                    has_conflict INTEGER DEFAULT 0,
                     created_at TEXT NOT NULL
                 );
 
@@ -162,8 +164,16 @@ class Database:
                 conn.execute("ALTER TABLE messages ADD COLUMN has_conflict INTEGER DEFAULT 0")
             if "conflict_note" not in existing_cols:
                 conn.execute("ALTER TABLE messages ADD COLUMN conflict_note TEXT DEFAULT ''")
+            if "ttft_ms" not in existing_cols:
+                conn.execute("ALTER TABLE messages ADD COLUMN ttft_ms INTEGER DEFAULT 0")
 
-    # --- Sessions (Isolated 1-on-1 per client_id) ---
+            analytics_cols = {
+                r["name"] for r in conn.execute("PRAGMA table_info(analytics_events)").fetchall()
+            }
+            if "has_conflict" not in analytics_cols:
+                conn.execute("ALTER TABLE analytics_events ADD COLUMN has_conflict INTEGER DEFAULT 0")
+
+    # --- Sessions (Strictly isolated 1-on-1 per client_id) ---
     def get_session(self, session_id: str) -> dict[str, Any] | None:
         with self._lock, self._connect() as conn:
             row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
@@ -183,12 +193,11 @@ class Database:
                 row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
                 if row:
                     owner = row["client_id"] or "default"
-                    if cid == "internal" or owner in {"default", cid}:
-                        new_owner = cid if (owner == "default" and cid != "internal") else owner
-                        if (user_email and row["user_email"] != user_email) or new_owner != owner:
+                    if owner == cid:
+                        if user_email and row["user_email"] != user_email:
                             conn.execute(
-                                "UPDATE sessions SET user_email = ?, client_id = ?, updated_at = ? WHERE id = ?",
-                                (user_email or row["user_email"], new_owner, now, session_id),
+                                "UPDATE sessions SET user_email = ?, updated_at = ? WHERE id = ?",
+                                (user_email, now, session_id),
                             )
                             row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
                         return dict(row)
@@ -197,7 +206,7 @@ class Database:
             sid = session_id or str(uuid.uuid4())
             conn.execute(
                 "INSERT INTO sessions (id, client_id, title, user_email, clarification_round, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)",
-                (sid, "default" if cid == "internal" else cid, title[:80], user_email, now, now),
+                (sid, cid, title[:80], user_email, now, now),
             )
             row = conn.execute("SELECT * FROM sessions WHERE id = ?", (sid,)).fetchone()
             return dict(row)
@@ -205,15 +214,10 @@ class Database:
     def list_sessions(self, client_id: str = "default", limit: int = 30) -> list[dict[str, Any]]:
         cid = (client_id or "default").strip()[:64]
         with self._lock, self._connect() as conn:
-            if cid == "internal":
-                rows = conn.execute(
-                    "SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT * FROM sessions WHERE client_id = ? ORDER BY updated_at DESC LIMIT ?",
-                    (cid, limit),
-                ).fetchall()
+            rows = conn.execute(
+                "SELECT * FROM sessions WHERE client_id = ? ORDER BY updated_at DESC LIMIT ?",
+                (cid, limit),
+            ).fetchall()
             return [dict(r) for r in rows]
 
     def update_session_state(
@@ -246,12 +250,9 @@ class Database:
     def delete_session(self, session_id: str, client_id: str = "default") -> bool:
         cid = (client_id or "default").strip()[:64]
         with self._lock, self._connect() as conn:
-            if cid == "internal":
-                cur = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-            else:
-                cur = conn.execute(
-                    "DELETE FROM sessions WHERE id = ? AND client_id = ?", (session_id, cid)
-                )
+            cur = conn.execute(
+                "DELETE FROM sessions WHERE id = ? AND client_id = ?", (session_id, cid)
+            )
             return cur.rowcount > 0
 
     # --- Messages ---
@@ -273,6 +274,7 @@ class Database:
         embedding_tokens: int = 0,
         cost_rub: float = 0.0,
         latency_ms: int = 0,
+        ttft_ms: int = 0,
     ) -> dict[str, Any]:
         mid = str(uuid.uuid4())
         now = utcnow()
@@ -283,8 +285,8 @@ class Database:
                     id, session_id, role, content, outcome, citations_json,
                     clarification_options_json, trace_json, has_conflict, conflict_note,
                     ticket_code, prompt_tokens, completion_tokens, embedding_tokens,
-                    cost_rub, latency_ms, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    cost_rub, latency_ms, ttft_ms, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     mid,
@@ -303,6 +305,7 @@ class Database:
                     embedding_tokens,
                     cost_rub,
                     latency_ms,
+                    ttft_ms,
                     now,
                 ),
             )
@@ -324,18 +327,28 @@ class Database:
             "embedding_tokens": embedding_tokens,
             "cost_rub": cost_rub,
             "latency_ms": latency_ms,
+            "ttft_ms": ttft_ms,
             "created_at": now,
         }
 
     def get_messages(self, session_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Return the MOST RECENT `limit` messages in chronological order."""
         with self._lock, self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC LIMIT ?",
+                """
+                SELECT * FROM (
+                    SELECT *, rowid AS _rid FROM messages
+                    WHERE session_id = ?
+                    ORDER BY created_at DESC, rowid DESC
+                    LIMIT ?
+                ) ORDER BY created_at ASC, _rid ASC
+                """,
                 (session_id, limit),
             ).fetchall()
         out = []
         for r in rows:
             d = dict(r)
+            d.pop("_rid", None)
             d["citations"] = json.loads(d.pop("citations_json") or "[]")
             d["clarification_options"] = json.loads(d.pop("clarification_options_json") or "[]")
             d["trace"] = json.loads(d.pop("trace_json") or "[]")
@@ -357,8 +370,17 @@ class Database:
         tid = str(uuid.uuid4())
         now = utcnow()
         with self._lock, self._connect() as conn:
-            cnt = conn.execute("SELECT COUNT(*) FROM escalation_tickets").fetchone()[0] + 1
-            ticket_code = f"QA-2026-{cnt:04d}"
+            codes = [
+                r[0]
+                for r in conn.execute("SELECT ticket_code FROM escalation_tickets").fetchall()
+                if r[0]
+            ]
+            max_seq = 0
+            for code in codes:
+                parts = str(code).split("-")
+                if len(parts) == 3 and parts[2].isdigit():
+                    max_seq = max(max_seq, int(parts[2]))
+            ticket_code = f"QA-2026-{max_seq + 1:04d}"
             conn.execute(
                 """
                 INSERT INTO escalation_tickets (
@@ -528,6 +550,7 @@ class Database:
         embedding_tokens: int,
         cost_rub: float,
         latency_ms: int,
+        has_conflict: bool = False,
     ) -> None:
         with self._lock, self._connect() as conn:
             conn.execute(
@@ -535,8 +558,8 @@ class Database:
                 INSERT INTO analytics_events (
                     id, session_id, question, topic_key, outcome, directorate,
                     doc_id, section_label, prompt_tokens, completion_tokens,
-                    embedding_tokens, cost_rub, latency_ms, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    embedding_tokens, cost_rub, latency_ms, has_conflict, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(uuid.uuid4()),
@@ -552,6 +575,7 @@ class Database:
                     embedding_tokens,
                     cost_rub,
                     latency_ms,
+                    int(bool(has_conflict)),
                     utcnow(),
                 ),
             )

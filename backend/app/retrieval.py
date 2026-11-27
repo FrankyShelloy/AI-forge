@@ -96,13 +96,25 @@ class HybridRetriever:
                 vectors_config=qm.VectorParams(size=dim, distance=qm.Distance.COSINE),
             )
 
+    def _reset_collection(self, name: str, dim: int) -> None:
+        existing = {c.name for c in self.qdrant.get_collections().collections}
+        if name in existing:
+            self.qdrant.delete_collection(collection_name=name)
+        self.qdrant.create_collection(
+            collection_name=name,
+            vectors_config=qm.VectorParams(size=dim, distance=qm.Distance.COSINE),
+        )
+
     def embed_texts(self, texts: list[str]) -> tuple[list[list[float]], int, float]:
-        """Compute embeddings via OpenAI-compatible API with 429 retry & single-query cache."""
+        """Compute embeddings via OpenAI-compatible API with 429 retry & thread-safe single-query cache."""
         if not texts:
             return [], 0, 0.0
-        if len(texts) == 1 and texts[0] in self._emb_cache:
-            vec, toks, cost = self._emb_cache[texts[0]]
-            return [vec], toks, 0.0
+        if len(texts) == 1:
+            with self._lock:
+                cached = self._emb_cache.get(texts[0])
+            if cached is not None:
+                vec, toks, _cost = cached
+                return [vec], toks, 0.0
 
         vectors: list[list[float]] = []
         total_tokens = 0
@@ -130,9 +142,10 @@ class HybridRetriever:
                 extra = getattr(resp.usage, "model_extra", None) or {}
                 total_cost += float(extra.get("cost_rub", 0.0) or 0.0)
         if len(texts) == 1 and vectors:
-            if len(self._emb_cache) > 256:
-                self._emb_cache.clear()
-            self._emb_cache[texts[0]] = (vectors[0], total_tokens, total_cost)
+            with self._lock:
+                if len(self._emb_cache) > 256:
+                    self._emb_cache.clear()
+                self._emb_cache[texts[0]] = (vectors[0], total_tokens, total_cost)
         return vectors, total_tokens, total_cost
 
     def _rebuild_bm25_regs(self) -> None:
@@ -233,10 +246,7 @@ class HybridRetriever:
         vectors, tokens, cost = self.embed_texts(texts)
         dim = len(vectors[0])
         if replace_all:
-            self.qdrant.recreate_collection(
-                collection_name=REG_COLLECTION,
-                vectors_config=qm.VectorParams(size=dim, distance=qm.Distance.COSINE),
-            )
+            self._reset_collection(REG_COLLECTION, dim)
         else:
             self._ensure_collection(REG_COLLECTION, dim)
 
@@ -259,13 +269,32 @@ class HybridRetriever:
             self._rebuild_bm25_regs()
         logger.info("Indexed %d chunks (%d emb tokens, %.4f RUB)", len(chunks), tokens, cost)
 
+    def delete_doc_chunks(self, doc_id: str) -> None:
+        """Remove all existing Qdrant points & BM25 entries belonging to doc_id before re-indexing."""
+        try:
+            self.qdrant.delete(
+                collection_name=REG_COLLECTION,
+                points_selector=qm.FilterSelector(
+                    filter=qm.Filter(
+                        must=[qm.FieldCondition(key="doc_id", match=qm.MatchValue(value=doc_id))]
+                    )
+                ),
+            )
+        except Exception as exc:
+            logger.warning("Qdrant delete by doc_id=%s skipped: %s", doc_id, exc)
+        with self._lock:
+            self._reg_docs = [d for d in self._reg_docs if d.get("doc_id") != doc_id]
+            self._rebuild_bm25_regs()
+
     def index_uploaded_docx(self, file_path: str | Path) -> dict[str, Any]:
-        """Parse and index a newly uploaded .docx regulation without restarting."""
+        """Parse and cleanly replace/index a newly uploaded .docx regulation without restarting."""
         chunks = parse_docx(file_path)
         if not chunks:
             raise ValueError("Не удалось извлечь текст из документа .docx")
-        self._index_chunks(chunks, replace_all=False)
         c0 = chunks[0]
+        # Delete any stale chunks from an older revision of the same document before indexing
+        self.delete_doc_chunks(c0.doc_id)
+        self._index_chunks(chunks, replace_all=False)
         self.db.upsert_indexed_doc(
             doc_id=c0.doc_id,
             filename=c0.filename,
@@ -336,6 +365,11 @@ class HybridRetriever:
 
     def _sync_faqs(self, faqs: list[dict[str, Any]]) -> int:
         if not faqs:
+            # Also reset Qdrant FAQ collection so no orphaned points resurface later
+            try:
+                self._reset_collection(FAQ_COLLECTION, self.settings.embedding_dim)
+            except Exception as exc:
+                logger.warning("Reset empty FAQ collection skipped: %s", exc)
             with self._lock:
                 self._faq_docs = []
                 self._faq_bm25 = None
@@ -392,7 +426,8 @@ class HybridRetriever:
 
         def _search_regs_for_filter(dir_val: str | None, limit_k: int) -> list[RetrievedItem]:
             q_filter = None
-            if dir_val and dir_val in {"DBRCT", "TECH_DIR", "IB"}:
+            is_specific_dir = bool(dir_val and dir_val not in {"MULTI", "ALL", "UNKNOWN"})
+            if is_specific_dir:
                 q_filter = qm.Filter(
                     must=[qm.FieldCondition(key="directorate", match=qm.MatchValue(value=dir_val))]
                 )
@@ -424,11 +459,7 @@ class HybridRetriever:
                     (idx, float(sc))
                     for idx, sc in enumerate(scores)
                     if sc > 0.0
-                    and (
-                        not dir_val
-                        or dir_val not in {"DBRCT", "TECH_DIR", "IB"}
-                        or reg_docs[idx]["directorate"] == dir_val
-                    )
+                    and (not is_specific_dir or reg_docs[idx]["directorate"] == dir_val)
                 ]
                 indexed_scores.sort(key=lambda x: x[1], reverse=True)
                 for rank, (idx, _) in enumerate(indexed_scores[:24]):

@@ -19,7 +19,7 @@ import {
   ShieldAlert,
   Sparkles,
 } from "lucide-react";
-import type { ChatMessage, Citation } from "../types";
+import type { ChatMessage, Citation, HealthInfo } from "../types";
 
 const QUICK_SCENARIOS = [
   {
@@ -57,7 +57,8 @@ interface Props {
   onSelectCitation: (c: Citation) => void;
   onSyncMail: () => void;
   syncingMail: boolean;
-  onManualEscalate: (question: string) => void;
+  onManualEscalate: (question: string) => Promise<void> | void;
+  health: HealthInfo | null;
 }
 
 /**
@@ -83,9 +84,11 @@ export const ChatView: React.FC<Props> = ({
   onSyncMail,
   syncingMail,
   onManualEscalate,
+  health,
 }) => {
   const [input, setInput] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [escalatingId, setEscalatingId] = useState<string | null>(null);
   const [expandedTraces, setExpandedTraces] = useState<Record<string, boolean>>({});
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -141,7 +144,7 @@ export const ChatView: React.FC<Props> = ({
               {/* Trust indicators */}
               <div className="flex flex-wrap items-center justify-center gap-2 mt-5 text-[11px] font-medium text-slate-600">
                 <span className="px-2.5 py-1 rounded-full bg-slate-100/90 border border-slate-200/70">
-                  4 действующих регламента · 611 пунктов
+                  {health?.docs_indexed ?? 4} действующих регламента · {health?.chunks_indexed ?? 611} пунктов
                 </span>
                 <span className="px-2.5 py-1 rounded-full bg-slate-100/90 border border-slate-200/70">
                   48 терминов корпоративного глоссария
@@ -362,8 +365,9 @@ export const ChatView: React.FC<Props> = ({
                             {m.clarification_options.map((opt, oi) => (
                               <button
                                 key={oi}
+                                disabled={isSending}
                                 onClick={() => onSend(opt)}
-                                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-rose-50/70 text-brand-700 border border-rose-200 hover:bg-brand-600 hover:text-white hover:border-brand-600 shadow-sm transition"
+                                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-rose-50/70 text-brand-700 border border-rose-200 hover:bg-brand-600 hover:text-white hover:border-brand-600 disabled:opacity-50 disabled:pointer-events-none shadow-sm transition"
                               >
                                 <span>{opt}</span>
                                 <ArrowRight className="w-3 h-3" />
@@ -460,9 +464,18 @@ export const ChatView: React.FC<Props> = ({
                       <div className="mt-3.5 pt-2.5 border-t border-slate-100/80 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400">
                         <div className="flex items-center gap-3">
                           {(m.latency_ms || 0) > 0 && (
-                            <span className="inline-flex items-center gap-1">
+                            <span
+                              className="inline-flex items-center gap-1"
+                              title={
+                                (m.ttft_ms || 0) > 0 && (m.ttft_ms || 0) < (m.latency_ms || 0)
+                                  ? `Первый токен (TTFT): ${((m.ttft_ms || 0) / 1000).toFixed(2)} с · Полный ответ: ${((m.latency_ms || 0) / 1000).toFixed(2)} с`
+                                  : undefined
+                              }
+                            >
                               <Clock className="w-3 h-3" />
-                              {((m.latency_ms || 0) / 1000).toFixed(2)} с
+                              {(m.ttft_ms || 0) > 0 && (m.ttft_ms || 0) < (m.latency_ms || 0)
+                                ? `TTFT ${((m.ttft_ms || 0) / 1000).toFixed(1)} с · всего ${((m.latency_ms || 0) / 1000).toFixed(1)} с`
+                                : `${((m.latency_ms || 0) / 1000).toFixed(2)} с`}
                             </span>
                           )}
                           {(m.prompt_tokens || 0) > 0 && (
@@ -496,11 +509,22 @@ export const ChatView: React.FC<Props> = ({
                             m.outcome !== "out_of_scope" &&
                             m.outcome !== "faq_updated" && (
                               <button
-                                onClick={() => onManualEscalate(lastUserQuestionBefore(idx) || m.content.slice(0, 120))}
-                                className="inline-flex items-center gap-1 px-2 py-1 rounded-md hover:bg-rose-50 text-slate-400 hover:text-brand-700 transition"
+                                disabled={isSending || escalatingId === m.id}
+                                onClick={async () => {
+                                  setEscalatingId(m.id);
+                                  try {
+                                    await onManualEscalate(
+                                      lastUserQuestionBefore(idx) || m.content.slice(0, 120)
+                                    );
+                                  } finally {
+                                    setEscalatingId(null);
+                                  }
+                                }}
+                                className="inline-flex items-center gap-1 px-2 py-1 rounded-md hover:bg-rose-50 text-slate-400 hover:text-brand-700 disabled:opacity-40 transition"
                                 title="Направить дополнительный вопрос в Службу качества по почте"
                               >
-                                <Mail className="w-3 h-3" /> Уточнить в Качестве
+                                <Mail className="w-3 h-3" />{" "}
+                                {escalatingId === m.id ? "Отправка..." : "Уточнить в Качестве"}
                               </button>
                             )}
                         </div>

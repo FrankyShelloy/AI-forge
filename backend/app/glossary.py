@@ -62,9 +62,13 @@ GLOSSARY: dict[str, str] = {
     "FTE": "Full-Time Equivalent (полная занятость)",
     "ДБР": "ДБРЦТ (Департамент бизнес-решений и цифровой трансформации)",
     "ДБРЦТ": "Департамент бизнес-решений и цифровой трансформации",
+    "ИБ": "Дирекция информационной безопасности",
     "ГП": "Гарантийное письмо",
     "СУП": "Система управления проектами",
 }
+
+# Lowercase stop-words that collide with common Russian prepositions/particles
+_LOWERCASE_STOP: set[str] = {"по", "ки"}
 
 # Colloquial / English user phrasings mapped to canonical corporate terms
 COLLOQUIAL_EXPANSIONS: list[tuple[re.Pattern[str], str]] = [
@@ -86,8 +90,10 @@ def expand_query_with_glossary(query: str) -> tuple[str, list[str]]:
     matched_notes: list[str] = []
 
     tokens = set(re.findall(r"[A-Za-zА-Яа-яЁё0-9-]+", query))
+    tokens_lower = {t.lower() for t in tokens}
     for abbr, full in GLOSSARY.items():
-        if abbr in tokens or (len(abbr) >= 3 and abbr.lower() in {t.lower() for t in tokens}):
+        abbr_low = abbr.lower()
+        if abbr in tokens or (abbr_low not in _LOWERCASE_STOP and abbr_low in tokens_lower):
             additions.append(full)
             matched_notes.append(f"{abbr} = {full}")
 

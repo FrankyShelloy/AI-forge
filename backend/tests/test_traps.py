@@ -264,6 +264,7 @@ async def main() -> None:
                         "embedding_tokens": m["embedding_tokens"],
                         "cost_rub": m["cost_rub"],
                         "latency_ms": m["latency_ms"],
+                        "ttft_ms": m.get("ttft_ms", 0),
                     }
                 )
 

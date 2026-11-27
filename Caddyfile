@@ -1,5 +1,6 @@
 139-100-218-28.sslip.io {
 	encode gzip
+	header X-Robots-Tag "noindex, nofollow"
 
 	redir /mail /webmail/ 302
 	redir /mail/ /webmail/ 302
@@ -19,8 +20,10 @@
 	}
 }
 
-http://139.100.218.28 {
+# Fallback for direct IP access AND local `docker compose up` on http://localhost
+:80 {
 	encode gzip
+	header X-Robots-Tag "noindex, nofollow"
 
 	redir /mail /webmail/ 302
 	redir /mail/ /webmail/ 302
