@@ -79,8 +79,8 @@ def main() -> None:
 
     # Comments (up to 3 rows: A17, A18, A19)
     ws["A17"] = (
-        "Модели Open-Weight Apache 2.0 (HF: Qwen/Qwen3-30B-A3B-Instruct-2507 и Qwen/Qwen3-Embedding-4B), "
-        "тарифы OpenRouter ($0.09/$0.30 и $0.02 за 1M tok); замеры токенов — средние по 10 тестам на 4 регламентах."
+        f"Модели Open-Weight Apache 2.0 (HF: Qwen/Qwen3-30B-A3B-Instruct-2507 и Qwen/Qwen3-Embedding-4B), "
+        f"тарифы OpenRouter ($0.09/$0.30 и $0.02 за 1M tok); замеры токенов — средние по {len(rows)} вызовам (18 автотестов на 4 регламентах)."
     )
     ws["A18"] = (
         "Локальный контур РФ 152-ФЗ: обе модели в Q4 занимают ~23 ГБ VRAM (1×GPU 24–48 ГБ, напр. RTX 4090 / L40S, "

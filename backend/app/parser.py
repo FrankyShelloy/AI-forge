@@ -196,15 +196,30 @@ def parse_docx(path: str | Path) -> list[ParsedChunk]:
                 group_order.append(gkey)
             groups[gkey].append(cl)
 
-        for gkey in group_order:
+        # Build group texts first so short sections or adjacent sibling clauses (e.g. 1.5 + 1.6) share rich context
+        group_bodies: list[str] = [
+            "\n".join("\n".join(c["lines"]) for c in groups[gk]) for gk in group_order
+        ]
+        sec_full_body = "\n".join(group_bodies)
+        header_parent = f"[{dir_label} | {doc_title} | Раздел {sec['num']}. {sec['title']}]"
+
+        for g_idx, gkey in enumerate(group_order):
             g_clauses = groups[gkey]
-            parent_body = "\n".join("\n".join(c["lines"]) for c in g_clauses)
-            # If parent_body is very small (< 300 chars) and section has neighbors, keep concise header
-            header_parent = f"[{dir_label} | {doc_title} | Раздел {sec['num']}. {sec['title']}]"
-            full_parent = f"{header_parent}\n{parent_body}"
-            # Cap parent size to keep prompts crisp & economical
-            if len(full_parent) > 2600:
-                full_parent = full_parent[:2600] + "\n..."
+            own_body = group_bodies[g_idx]
+            if len(sec_full_body) <= 2000:
+                context_body = sec_full_body
+            else:
+                # Include ±1 adjacent sibling group if within 2200-char budget
+                parts_ctx = [own_body]
+                if g_idx > 0 and len("\n".join(parts_ctx)) + len(group_bodies[g_idx - 1]) <= 2200:
+                    parts_ctx.insert(0, group_bodies[g_idx - 1])
+                if g_idx + 1 < len(group_order) and len("\n".join(parts_ctx)) + len(group_bodies[g_idx + 1]) <= 2200:
+                    parts_ctx.append(group_bodies[g_idx + 1])
+                context_body = "\n".join(parts_ctx)
+
+            full_parent = f"{header_parent}\n{context_body}"
+            if len(full_parent) > 2400:
+                full_parent = full_parent[:2400] + "\n..."
 
             for cl in g_clauses:
                 raw_text = "\n".join(cl["lines"]).strip()
@@ -217,8 +232,7 @@ def parse_docx(path: str | Path) -> list[ParsedChunk]:
                 child_text = f"{header_child}\n{raw_text}"
                 uid_src = f"{doc_id}:{sec['num']}:{cl['num']}:{raw_text[:80]}"
                 chunk_id = hashlib.md5(uid_src.encode("utf-8")).hexdigest()
-                # If a 2-level group is small enough, parent_text = full_parent; if huge, child + neighbors
-                p_text = full_parent if len(parent_body) <= 2400 else child_text
+                p_text = full_parent if len(own_body) <= 2200 else child_text
                 chunks.append(
                     ParsedChunk(
                         chunk_id=chunk_id,

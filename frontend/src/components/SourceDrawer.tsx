@@ -18,7 +18,7 @@ export const SourceDrawer: React.FC<Props> = ({
   const pct = Math.max(10, Math.min(100, Math.round(citation.score * 100)));
 
   return (
-    <aside className="w-[410px] shrink-0 bg-white border-l border-slate-200/90 h-full flex flex-col shadow-xl z-10 animate-fadeSlideUp">
+    <aside className="fixed inset-y-0 right-0 lg:static w-full sm:w-[360px] xl:w-[400px] shrink-0 bg-white border-l border-slate-200/90 h-full flex flex-col shadow-2xl lg:shadow-xl z-30 lg:z-10 animate-fadeSlideUp">
       {/* Header */}
       <div className="p-5 border-b border-slate-100 bg-gradient-to-b from-slate-50/90 to-white">
         <div className="flex items-start justify-between gap-2">

@@ -35,6 +35,7 @@ class Database:
                 """
                 CREATE TABLE IF NOT EXISTS sessions (
                     id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL DEFAULT 'default',
                     title TEXT NOT NULL,
                     user_email TEXT NOT NULL,
                     clarification_round INTEGER NOT NULL DEFAULT 0,
@@ -146,6 +147,12 @@ class Database:
                 """
             )
             # Safe additive migrations for existing DB files
+            session_cols = {
+                r["name"] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()
+            }
+            if "client_id" not in session_cols:
+                conn.execute("ALTER TABLE sessions ADD COLUMN client_id TEXT NOT NULL DEFAULT 'default'")
+
             existing_cols = {
                 r["name"] for r in conn.execute("PRAGMA table_info(messages)").fetchall()
             }
@@ -156,34 +163,57 @@ class Database:
             if "conflict_note" not in existing_cols:
                 conn.execute("ALTER TABLE messages ADD COLUMN conflict_note TEXT DEFAULT ''")
 
-    # --- Sessions ---
+    # --- Sessions (Isolated 1-on-1 per client_id) ---
+    def get_session(self, session_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            return dict(row) if row else None
+
     def get_or_create_session(
-        self, session_id: str | None, user_email: str, title: str = "Новый диалог"
+        self,
+        session_id: str | None,
+        user_email: str,
+        title: str = "Новый диалог",
+        client_id: str = "default",
     ) -> dict[str, Any]:
         now = utcnow()
+        cid = (client_id or "default").strip()[:64]
         with self._lock, self._connect() as conn:
             if session_id:
                 row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
                 if row:
-                    if user_email and row["user_email"] != user_email:
-                        conn.execute(
-                            "UPDATE sessions SET user_email = ?, updated_at = ? WHERE id = ?",
-                            (user_email, now, session_id),
-                        )
-                    return dict(row)
+                    owner = row["client_id"] or "default"
+                    if cid == "internal" or owner in {"default", cid}:
+                        new_owner = cid if (owner == "default" and cid != "internal") else owner
+                        if (user_email and row["user_email"] != user_email) or new_owner != owner:
+                            conn.execute(
+                                "UPDATE sessions SET user_email = ?, client_id = ?, updated_at = ? WHERE id = ?",
+                                (user_email or row["user_email"], new_owner, now, session_id),
+                            )
+                            row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+                        return dict(row)
+                    # Foreign client_id trying to reuse another user's session -> create isolated session
+                    session_id = None
             sid = session_id or str(uuid.uuid4())
             conn.execute(
-                "INSERT INTO sessions (id, title, user_email, clarification_round, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)",
-                (sid, title[:80], user_email, now, now),
+                "INSERT INTO sessions (id, client_id, title, user_email, clarification_round, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)",
+                (sid, "default" if cid == "internal" else cid, title[:80], user_email, now, now),
             )
             row = conn.execute("SELECT * FROM sessions WHERE id = ?", (sid,)).fetchone()
             return dict(row)
 
-    def list_sessions(self, limit: int = 30) -> list[dict[str, Any]]:
+    def list_sessions(self, client_id: str = "default", limit: int = 30) -> list[dict[str, Any]]:
+        cid = (client_id or "default").strip()[:64]
         with self._lock, self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)
-            ).fetchall()
+            if cid == "internal":
+                rows = conn.execute(
+                    "SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM sessions WHERE client_id = ? ORDER BY updated_at DESC LIMIT ?",
+                    (cid, limit),
+                ).fetchall()
             return [dict(r) for r in rows]
 
     def update_session_state(
@@ -213,9 +243,16 @@ class Database:
             vals.append(session_id)
             conn.execute(f"UPDATE sessions SET {', '.join(parts)} WHERE id = ?", vals)
 
-    def delete_session(self, session_id: str) -> None:
+    def delete_session(self, session_id: str, client_id: str = "default") -> bool:
+        cid = (client_id or "default").strip()[:64]
         with self._lock, self._connect() as conn:
-            conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            if cid == "internal":
+                cur = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            else:
+                cur = conn.execute(
+                    "DELETE FROM sessions WHERE id = ? AND client_id = ?", (session_id, cid)
+                )
+            return cur.rowcount > 0
 
     # --- Messages ---
     def add_message(
@@ -452,6 +489,10 @@ class Database:
     def toggle_faq_status(self, faq_id: str, status: str) -> None:
         with self._lock, self._connect() as conn:
             conn.execute("UPDATE faq_entries SET status = ? WHERE id = ?", (status, faq_id))
+
+    def delete_faq(self, faq_id: str) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM faq_entries WHERE id = ?", (faq_id,))
 
     # --- Security Audit Events ---
     def log_security_event(

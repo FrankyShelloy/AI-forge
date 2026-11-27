@@ -1,13 +1,16 @@
 import React, { useEffect, useState } from "react";
-import { CheckCircle2, X } from "lucide-react";
+import { CheckCircle2, KeyRound, ShieldCheck, UserCheck, X } from "lucide-react";
 import {
   deleteSession,
   fetchHealth,
   fetchMessages,
   fetchSessions,
+  getQualityKey,
   manualEscalate,
+  setQualityKey,
   streamChat,
   syncMailNow,
+  verifyQualityPin,
 } from "./api";
 import { ChatView } from "./components/ChatView";
 import { DocumentsView } from "./components/DocumentsView";
@@ -34,6 +37,12 @@ export default function App() {
   const [syncingMail, setSyncingMail] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [securityOpen, setSecurityOpen] = useState(false);
+
+  // RBAC Role State ("Сотрудник" read-only vs "Служба качества" write KB/FAQ)
+  const [isQualityRole, setIsQualityRole] = useState<boolean>(() => Boolean(getQualityKey()));
+  const [roleModalOpen, setRoleModalOpen] = useState(false);
+  const [pinInput, setPinInput] = useState("");
+  const [pinError, setPinError] = useState<string | null>(null);
 
   // Deep-link state when jumping from a chat citation into full Document Explorer
   const [jumpDocId, setJumpDocId] = useState<string | null>(null);
@@ -89,6 +98,27 @@ export default function App() {
     }, 8000);
     return () => clearInterval(timer);
   }, [hasPendingEscalation, currentSessionId]);
+
+  const handleUnlockQuality = async (pinToVerify: string) => {
+    setPinError(null);
+    try {
+      await verifyQualityPin(pinToVerify);
+      setQualityKey(pinToVerify);
+      setIsQualityRole(true);
+      setRoleModalOpen(false);
+      setPinInput("");
+      showToast("Активирована роль «Служба качества»: открыто управление FAQ и загрузка .docx");
+    } catch (err: unknown) {
+      setPinError(err instanceof Error ? err.message : "Неверный ключ");
+    }
+  };
+
+  const handleSwitchToEmployee = () => {
+    setQualityKey(null);
+    setIsQualityRole(false);
+    setRoleModalOpen(false);
+    showToast("Включён режим «Сотрудник» (только чтение БЗ и приватный чат 1-на-1)");
+  };
 
   const handleSelectSession = async (sid: string) => {
     setCurrentSessionId(sid);
@@ -234,6 +264,12 @@ export default function App() {
         onSyncMail={handleSyncMail}
         syncingMail={syncingMail}
         onOpenSecurity={() => setSecurityOpen(true)}
+        isQualityRole={isQualityRole}
+        onOpenRoleModal={() => {
+          setPinError(null);
+          setRoleModalOpen(true);
+        }}
+        onNewSession={handleNewSession}
         health={health}
       />
 
@@ -252,7 +288,7 @@ export default function App() {
       )}
 
       {/* Main Workspace */}
-      <div className="flex-1 flex min-h-0 overflow-hidden">
+      <div className="flex-1 flex min-h-0 overflow-hidden relative">
         {activeTab === "chat" && (
           <>
             <Sidebar
@@ -289,13 +325,132 @@ export default function App() {
             initialDocId={jumpDocId}
             highlightClause={jumpClause}
             onClearJump={() => setJumpClause(null)}
+            isQualityRole={isQualityRole}
+            onRequestQualityRole={() => {
+              setPinError(null);
+              setRoleModalOpen(true);
+            }}
           />
         )}
 
         {activeTab === "quality" && (
-          <QualityDashboard onSyncMail={handleSyncMail} syncingMail={syncingMail} />
+          <QualityDashboard
+            onSyncMail={handleSyncMail}
+            syncingMail={syncingMail}
+            isQualityRole={isQualityRole}
+            onRequestQualityRole={() => {
+              setPinError(null);
+              setRoleModalOpen(true);
+            }}
+          />
         )}
       </div>
+
+      {/* RBAC Role Switcher Modal */}
+      {roleModalOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/45 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeSlideUp"
+          onClick={() => setRoleModalOpen(false)}
+        >
+          <div
+            className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-indigo-50 border border-indigo-200 flex items-center justify-center">
+                  <KeyRound className="w-4 h-4 text-indigo-600" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">
+                    Модель прав доступа (RBAC)
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Все читают регламенты · изменяет БЗ только Служба качества
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setRoleModalOpen(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80 text-xs text-slate-600 space-y-1.5 leading-relaxed">
+              <div className="flex items-center gap-1.5 font-semibold text-slate-800">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                Текущая роль:{" "}
+                <span className={isQualityRole ? "text-indigo-700" : "text-slate-900"}>
+                  {isQualityRole ? "Служба качества (чтение + управление БЗ)" : "Сотрудник (чтение + приватный чат 1-на-1)"}
+                </span>
+              </div>
+              <p>
+                Диалоги каждого посетителя изолированы по браузерному идентификатору{" "}
+                <code className="px-1 py-0.5 bg-white rounded border border-slate-200 font-mono text-[11px]">
+                  X-Client-Id
+                </code>
+                . Загрузка новых регламентов <code className="font-mono">.docx</code> и управление записями FAQ защищены ключом роли Службы качества.
+              </p>
+            </div>
+
+            {isQualityRole ? (
+              <button
+                onClick={handleSwitchToEmployee}
+                className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold transition"
+              >
+                Переключиться обратно в роль «Сотрудник (Read-Only)»
+              </button>
+            ) : (
+              <div className="space-y-3">
+                <button
+                  type="button"
+                  onClick={() => handleUnlockQuality("Quality2026")}
+                  className="w-full py-2.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 shadow-sm transition"
+                >
+                  <UserCheck className="w-4 h-4" />
+                  Войти как Служба качества в 1 клик (демо для жюри)
+                </button>
+
+                <div className="relative flex items-center py-0.5">
+                  <div className="flex-grow border-t border-slate-200" />
+                  <span className="px-2 text-[10px] uppercase tracking-wider text-slate-400">
+                    или введите ключ вручную
+                  </span>
+                  <div className="flex-grow border-t border-slate-200" />
+                </div>
+
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (pinInput.trim()) handleUnlockQuality(pinInput.trim());
+                  }}
+                  className="flex items-center gap-2"
+                >
+                  <input
+                    type="password"
+                    value={pinInput}
+                    onChange={(e) => setPinInput(e.target.value)}
+                    placeholder="Ключ (Quality2026)"
+                    className="flex-1 px-3 py-2 rounded-xl border border-slate-200 text-xs focus:outline-none focus:border-indigo-500"
+                  />
+                  <button
+                    type="submit"
+                    className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold"
+                  >
+                    Подтвердить
+                  </button>
+                </form>
+
+                {pinError && (
+                  <div className="text-xs text-rose-600 font-medium">{pinError}</div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       <SecurityModal open={securityOpen} onClose={() => setSecurityOpen(false)} />
     </div>

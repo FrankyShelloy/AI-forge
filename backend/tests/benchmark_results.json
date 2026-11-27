@@ -1,101 +1,164 @@
 [
   {
-    "test": "S2_AMBIGUOUS_BUDGET_LEADTIME",
+    "test": "S2_AMBIGUOUS_COMPLEX_BUDGET_LEADTIME",
     "outcome": "clarify",
-    "prompt_tokens": 3137,
-    "completion_tokens": 347,
+    "prompt_tokens": 2909,
+    "completion_tokens": 330,
     "embedding_tokens": 45,
-    "cost_rub": 0.029728,
-    "latency_ms": 11834
+    "cost_rub": 0.027792,
+    "latency_ms": 9235
   },
   {
-    "test": "S2_AMBIGUOUS_BUDGET_LEADTIME",
+    "test": "S2_AMBIGUOUS_COMPLEX_BUDGET_LEADTIME",
     "outcome": "complex_answered",
-    "prompt_tokens": 5073,
-    "completion_tokens": 1253,
+    "prompt_tokens": 7184,
+    "completion_tokens": 534,
     "embedding_tokens": 45,
-    "cost_rub": 0.066082,
-    "latency_ms": 39940
+    "cost_rub": 0.060938,
+    "latency_ms": 10421
+  },
+  {
+    "test": "S2_DONT_KNOW_DIRECTORATE",
+    "outcome": "clarify",
+    "prompt_tokens": 3028,
+    "completion_tokens": 147,
+    "embedding_tokens": 20,
+    "cost_rub": 0.023685,
+    "latency_ms": 7000
+  },
+  {
+    "test": "S2_DONT_KNOW_DIRECTORATE",
+    "outcome": "answered",
+    "prompt_tokens": 8857,
+    "completion_tokens": 943,
+    "embedding_tokens": 20,
+    "cost_rub": 0.082619,
+    "latency_ms": 18713
+  },
+  {
+    "test": "S2_MAX_3_CLARIFICATIONS_ESCALATE",
+    "outcome": "clarify",
+    "prompt_tokens": 3028,
+    "completion_tokens": 147,
+    "embedding_tokens": 20,
+    "cost_rub": 0.02363,
+    "latency_ms": 6313
+  },
+  {
+    "test": "S2_MAX_3_CLARIFICATIONS_ESCALATE",
+    "outcome": "clarify",
+    "prompt_tokens": 3136,
+    "completion_tokens": 258,
+    "embedding_tokens": 20,
+    "cost_rub": 0.027256,
+    "latency_ms": 4822
+  },
+  {
+    "test": "S2_MAX_3_CLARIFICATIONS_ESCALATE",
+    "outcome": "clarify",
+    "prompt_tokens": 3240,
+    "completion_tokens": 153,
+    "embedding_tokens": 20,
+    "cost_rub": 0.025172,
+    "latency_ms": 6095
+  },
+  {
+    "test": "S2_MAX_3_CLARIFICATIONS_ESCALATE",
+    "outcome": "escalated",
+    "prompt_tokens": 3350,
+    "completion_tokens": 267,
+    "embedding_tokens": 20,
+    "cost_rub": 0.028889,
+    "latency_ms": 6279
+  },
+  {
+    "test": "S1_FIND_DOCUMENT_ONLY",
+    "outcome": "answered",
+    "prompt_tokens": 3022,
+    "completion_tokens": 181,
+    "embedding_tokens": 46,
+    "cost_rub": 0.024612,
+    "latency_ms": 3868
   },
   {
     "test": "S1_IB_SLA_PRIORITY",
     "outcome": "answered",
-    "prompt_tokens": 4255,
-    "completion_tokens": 447,
+    "prompt_tokens": 4486,
+    "completion_tokens": 395,
     "embedding_tokens": 46,
-    "cost_rub": 0.039659,
-    "latency_ms": 10741
+    "cost_rub": 0.039798,
+    "latency_ms": 9240
   },
   {
     "test": "S1_START_WITHOUT_CONTRACT_DBRCT",
     "outcome": "answered",
-    "prompt_tokens": 4051,
-    "completion_tokens": 547,
+    "prompt_tokens": 4758,
+    "completion_tokens": 514,
     "embedding_tokens": 72,
-    "cost_rub": 0.04103,
-    "latency_ms": 13542
+    "cost_rub": 0.044776,
+    "latency_ms": 10524
   },
   {
     "test": "S1_START_WITHOUT_ESTIMATE_IB",
     "outcome": "answered",
-    "prompt_tokens": 3309,
-    "completion_tokens": 333,
+    "prompt_tokens": 3711,
+    "completion_tokens": 318,
     "embedding_tokens": 35,
-    "cost_rub": 0.030455,
-    "latency_ms": 8104
+    "cost_rub": 0.032683,
+    "latency_ms": 7310
   },
   {
     "test": "S1_SUBCONTRACTOR_TECHDIR",
     "outcome": "answered",
-    "prompt_tokens": 3319,
-    "completion_tokens": 307,
+    "prompt_tokens": 3782,
+    "completion_tokens": 375,
     "embedding_tokens": 64,
-    "cost_rub": 0.029915,
-    "latency_ms": 9646
+    "cost_rub": 0.034726,
+    "latency_ms": 9039
   },
   {
     "test": "EDGE_MISSING_EXTERNAL_DOC",
     "outcome": "answered",
-    "prompt_tokens": 3243,
-    "completion_tokens": 225,
+    "prompt_tokens": 3058,
+    "completion_tokens": 310,
     "embedding_tokens": 99,
-    "cost_rub": 0.027357,
-    "latency_ms": 6071
+    "cost_rub": 0.028386,
+    "latency_ms": 7340
   },
   {
     "test": "EDGE_OUT_OF_SCOPE_BONUS",
     "outcome": "out_of_scope",
-    "prompt_tokens": 3028,
-    "completion_tokens": 242,
+    "prompt_tokens": 2814,
+    "completion_tokens": 226,
     "embedding_tokens": 18,
-    "cost_rub": 0.026179,
-    "latency_ms": 7736
-  },
-  {
-    "test": "EDGE_OFF_TOPIC_GENERAL_AI",
-    "outcome": "off_topic",
-    "prompt_tokens": 3547,
-    "completion_tokens": 179,
-    "embedding_tokens": 19,
-    "cost_rub": 0.027911,
-    "latency_ms": 5065
+    "cost_rub": 0.024362,
+    "latency_ms": 5011
   },
   {
     "test": "S3_ESCALATE_NO_HALLUCINATION",
     "outcome": "escalated",
-    "prompt_tokens": 2999,
-    "completion_tokens": 268,
+    "prompt_tokens": 3009,
+    "completion_tokens": 249,
     "embedding_tokens": 79,
-    "cost_rub": 0.026841,
-    "latency_ms": 10563
+    "cost_rub": 0.026407,
+    "latency_ms": 5576
   },
   {
     "test": "S3_FAQ_REUSE_PARAPHRASED",
     "outcome": "answered",
-    "prompt_tokens": 3928,
-    "completion_tokens": 378,
+    "prompt_tokens": 3985,
+    "completion_tokens": 311,
     "embedding_tokens": 75,
-    "cost_rub": 0.035788,
-    "latency_ms": 11013
+    "cost_rub": 0.034397,
+    "latency_ms": 8441
+  },
+  {
+    "test": "CONFLICT_REGULATION_OVERRIDES_FAQ",
+    "outcome": "answered",
+    "prompt_tokens": 5470,
+    "completion_tokens": 710,
+    "embedding_tokens": 51,
+    "cost_rub": 0.054523,
+    "latency_ms": 14696
   }
 ]

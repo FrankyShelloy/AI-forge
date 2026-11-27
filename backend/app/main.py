@@ -1,15 +1,14 @@
-"""FastAPI application serving SSE + REST Chat API (DION-ready), Regulation Explorer, Quality Analytics, Email HITL, and React SPA."""
+"""FastAPI application serving SSE + REST Chat API (DION-ready), Regulation Explorer, Quality Analytics, Email HITL, RBAC, and React SPA."""
 
 from __future__ import annotations
 
 import json
 import logging
-import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -47,7 +46,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title="Softline Quality AI Agent",
     description="ИИ-агент поиска ответов по корпоративным регламентам (Web UI + DION/Webhook JSON API)",
-    version="2.0.0",
+    version="2.1.0",
     lifespan=lifespan,
 )
 
@@ -77,12 +76,42 @@ class FaqToggleRequest(BaseModel):
     status: str  # active | disabled
 
 
+class QualityPinRequest(BaseModel):
+    pin: str
+
+
+def _require_quality_role(x_quality_key: str, action_desc: str) -> None:
+    if (x_quality_key or "").strip() != settings.quality_admin_pin:
+        db.log_security_event(
+            event_type="rbac_write_blocked",
+            actor="employee_ui",
+            detail=f"Отклонена попытка «{action_desc}» без ключа роли Службы качества (RBAC: все читают, пишет только Качество).",
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="Доступ разрешён только Службе качества. Переключите роль в верхней панели.",
+        )
+
+
+def _check_session_access(session_id: str, client_id: str) -> None:
+    sess = db.get_session(session_id)
+    if not sess:
+        return
+    cid = (client_id or "default").strip()[:64]
+    owner = sess.get("client_id") or "default"
+    if cid != "internal" and owner not in {"default", cid}:
+        raise HTTPException(
+            status_code=403,
+            detail="Приватный диалог 1-на-1 принадлежит другой пользовательской сессии.",
+        )
+
+
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
     docs = db.list_indexed_docs()
     return {
         "status": "ok",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "llm_model": settings.llm_model,
         "embedding_model": settings.embedding_model,
         "docs_indexed": len(docs),
@@ -92,6 +121,18 @@ async def health() -> dict[str, Any]:
         "default_employee_email": settings.default_employee_email,
         "quality_email": settings.quality_email,
     }
+
+
+@app.post("/api/auth/verify-quality")
+async def verify_quality_pin(body: QualityPinRequest) -> dict[str, Any]:
+    if body.pin.strip() != settings.quality_admin_pin:
+        db.log_security_event(
+            event_type="invalid_quality_pin",
+            actor="web_ui",
+            detail="Неверная попытка ввода PIN-кода роли Службы качества.",
+        )
+        raise HTTPException(status_code=403, detail="Неверный ключ доступа Службы качества")
+    return {"ok": True, "role": "quality"}
 
 
 @app.get("/api/system/models")
@@ -125,13 +166,17 @@ async def system_models() -> dict[str, Any]:
             "dion_webhook_endpoint": "/api/chat",
             "openapi_docs": "/docs",
             "mail_whitelist": sorted(settings.whitelist_set),
+            "rbac_policy": "Чтение БЗ — все сотрудники (приватные сессии X-Client-Id); изменение БЗ/FAQ — только Служба качества (X-Quality-Key + Email Whitelist).",
             "official_regulation_priority": "Официальный регламент всегда главнее FAQ; при расхождении подсвечивается конфликт.",
         },
     }
 
 
 @app.post("/api/chat")
-async def chat_sync(req: ChatRequest) -> dict[str, Any]:
+async def chat_sync(
+    req: ChatRequest,
+    x_client_id: str = Header(default="default"),
+) -> dict[str, Any]:
     """Synchronous JSON endpoint ready for DION / Telegram / corporate webhook bots."""
     if not req.message.strip():
         raise HTTPException(status_code=400, detail="Пустой запрос")
@@ -139,11 +184,15 @@ async def chat_sync(req: ChatRequest) -> dict[str, Any]:
         session_id=req.session_id,
         user_email=req.user_email or settings.default_employee_email,
         user_message=req.message.strip(),
+        client_id=x_client_id,
     )
 
 
 @app.post("/api/chat/stream")
-async def chat_stream(req: ChatRequest) -> StreamingResponse:
+async def chat_stream(
+    req: ChatRequest,
+    x_client_id: str = Header(default="default"),
+) -> StreamingResponse:
     if not req.message.strip():
         raise HTTPException(status_code=400, detail="Пустой запрос")
 
@@ -153,6 +202,7 @@ async def chat_stream(req: ChatRequest) -> StreamingResponse:
                 session_id=req.session_id,
                 user_email=req.user_email or settings.default_employee_email,
                 user_message=req.message.strip(),
+                client_id=x_client_id,
             ):
                 payload = json.dumps(ev["data"], ensure_ascii=False)
                 yield f"event: {ev['event']}\ndata: {payload}\n\n"
@@ -169,23 +219,35 @@ async def chat_stream(req: ChatRequest) -> StreamingResponse:
 
 
 @app.get("/api/sessions")
-async def list_sessions() -> list[dict[str, Any]]:
-    return db.list_sessions(limit=40)
+async def list_sessions(x_client_id: str = Header(default="default")) -> list[dict[str, Any]]:
+    return db.list_sessions(client_id=x_client_id, limit=40)
 
 
 @app.get("/api/sessions/{session_id}/messages")
-async def get_session_messages(session_id: str) -> list[dict[str, Any]]:
+async def get_session_messages(
+    session_id: str,
+    x_client_id: str = Header(default="default"),
+) -> list[dict[str, Any]]:
+    _check_session_access(session_id, x_client_id)
     return db.get_messages(session_id, limit=100)
 
 
 @app.delete("/api/sessions/{session_id}")
-async def delete_session(session_id: str) -> dict[str, str]:
-    db.delete_session(session_id)
+async def delete_session(
+    session_id: str,
+    x_client_id: str = Header(default="default"),
+) -> dict[str, str]:
+    _check_session_access(session_id, x_client_id)
+    db.delete_session(session_id, client_id=x_client_id)
     return {"status": "deleted"}
 
 
 @app.post("/api/escalate")
-async def manual_escalate(req: ManualEscalateRequest) -> dict[str, Any]:
+async def manual_escalate(
+    req: ManualEscalateRequest,
+    x_client_id: str = Header(default="default"),
+) -> dict[str, Any]:
+    _check_session_access(req.session_id, x_client_id)
     ticket = await email_service.send_escalation(
         session_id=req.session_id,
         user_email=req.user_email or settings.default_employee_email,
@@ -224,7 +286,12 @@ async def list_faqs() -> list[dict[str, Any]]:
 
 
 @app.patch("/api/faqs/{faq_id}")
-async def toggle_faq(faq_id: str, body: FaqToggleRequest) -> dict[str, str]:
+async def toggle_faq(
+    faq_id: str,
+    body: FaqToggleRequest,
+    x_quality_key: str = Header(default=""),
+) -> dict[str, str]:
+    _require_quality_role(x_quality_key, f"изменение статуса FAQ {faq_id}")
     if body.status not in {"active", "disabled"}:
         raise HTTPException(status_code=400, detail="Invalid status")
     db.toggle_faq_status(faq_id, body.status)
@@ -271,15 +338,27 @@ async def get_document_detail(doc_id: str) -> dict[str, Any]:
 
 
 @app.post("/api/documents/upload")
-async def upload_document(file: UploadFile = File(...)) -> dict[str, Any]:
+async def upload_document(
+    file: UploadFile = File(...),
+    x_quality_key: str = Header(default=""),
+) -> dict[str, Any]:
+    _require_quality_role(x_quality_key, f"загрузка регламента {file.filename}")
     if not file.filename or not file.filename.lower().endswith(".docx"):
         raise HTTPException(status_code=400, detail="Поддерживаются только файлы .docx")
+    content = await file.read()
+    max_bytes = settings.max_upload_mb * 1024 * 1024
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Размер файла превышает допустимый лимит {settings.max_upload_mb} МБ",
+        )
+    if len(content) < 100:
+        raise HTTPException(status_code=400, detail="Файл повреждён или пуст")
     docs_dir = Path(settings.docs_dir)
     docs_dir.mkdir(parents=True, exist_ok=True)
     safe_name = Path(file.filename).name
     dest = docs_dir / safe_name
-    with dest.open("wb") as out:
-        shutil.copyfileobj(file.file, out)
+    dest.write_bytes(content)
     try:
         return retriever.index_uploaded_docx(dest)
     except Exception as exc:

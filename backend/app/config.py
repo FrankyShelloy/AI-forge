@@ -40,10 +40,12 @@ class Settings(BaseSettings):
     default_employee_email: str = "employee@corp.local"
     imap_poll_interval_seconds: int = 10
 
-    # App
+    # App & RBAC
     public_url: str = "https://139-100-218-28.sslip.io"
     webmail_url: str = "https://139-100-218-28.sslip.io/webmail/"
     max_clarification_rounds: int = 3
+    quality_admin_pin: str = "Quality2026"
+    max_upload_mb: int = 5
 
     @property
     def whitelist_set(self) -> set[str]:

@@ -4,6 +4,7 @@ import {
   BookOpen,
   FileText,
   FileWarning,
+  Lock,
   Search,
   Upload,
 } from "lucide-react";
@@ -14,12 +15,16 @@ interface Props {
   initialDocId?: string | null;
   highlightClause?: string | null;
   onClearJump?: () => void;
+  isQualityRole: boolean;
+  onRequestQualityRole: () => void;
 }
 
 export const DocumentsView: React.FC<Props> = ({
   initialDocId,
   highlightClause,
   onClearJump,
+  isQualityRole,
+  onRequestQualityRole,
 }) => {
   const [docs, setDocs] = useState<IndexedDoc[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(initialDocId || null);
@@ -123,12 +128,26 @@ export const DocumentsView: React.FC<Props> = ({
             onChange={handleUpload}
           />
           <button
-            onClick={() => fileRef.current?.click()}
+            onClick={() => {
+              if (!isQualityRole) {
+                onRequestQualityRole();
+                return;
+              }
+              fileRef.current?.click();
+            }}
             disabled={uploading}
-            title="Загрузить новый регламент .docx в базу знаний"
-            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-[11px] font-semibold transition shrink-0"
+            title={
+              isQualityRole
+                ? "Загрузить новый регламент .docx в базу знаний (до 5 МБ)"
+                : "Доступно только Службе качества — нажмите для переключения роли"
+            }
+            className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition shrink-0 ${
+              isQualityRole
+                ? "bg-slate-900 hover:bg-slate-800 text-white"
+                : "bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-200"
+            }`}
           >
-            <Upload className="w-3.5 h-3.5" />
+            {isQualityRole ? <Upload className="w-3.5 h-3.5" /> : <Lock className="w-3 h-3" />}
             {uploading ? "..." : ".docx"}
           </button>
         </div>

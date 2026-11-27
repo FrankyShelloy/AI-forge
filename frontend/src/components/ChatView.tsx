@@ -375,25 +375,47 @@ export const ChatView: React.FC<Props> = ({
 
                       {/* Escalation action strip (S3) */}
                       {m.outcome === "escalated" && (
-                        <div className="mt-4 pt-3.5 border-t border-slate-100 flex flex-wrap items-center gap-2">
-                          <a
-                            href="/webmail/"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-900 text-white hover:bg-slate-800 shadow-sm transition"
-                          >
-                            <Mail className="w-3.5 h-3.5" />
-                            Открыть Roundcube (ответить от Качества)
-                            <ExternalLink className="w-3 h-3 opacity-75" />
-                          </a>
-                          <button
-                            onClick={onSyncMail}
-                            disabled={syncingMail}
-                            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60 shadow-sm transition"
-                          >
-                            <RefreshCw className={`w-3.5 h-3.5 ${syncingMail ? "animate-spin" : ""}`} />
-                            Проверить ответ сейчас
-                          </button>
+                        <div className="mt-4 pt-3.5 border-t border-slate-100 space-y-2.5">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <a
+                              href="/webmail/"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-900 text-white hover:bg-slate-800 shadow-sm transition"
+                            >
+                              <Mail className="w-3.5 h-3.5" />
+                              Открыть Roundcube (ответить от Качества)
+                              <ExternalLink className="w-3 h-3 opacity-75" />
+                            </a>
+                            <button
+                              onClick={onSyncMail}
+                              disabled={syncingMail}
+                              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60 shadow-sm transition"
+                            >
+                              <RefreshCw className={`w-3.5 h-3.5 ${syncingMail ? "animate-spin" : ""}`} />
+                              Проверить ответ сейчас
+                            </button>
+                          </div>
+                          <div className="px-3 py-2 rounded-xl bg-slate-50 border border-slate-200/80 flex flex-wrap items-center gap-2 text-[11px] text-slate-600">
+                            <span className="font-semibold text-slate-700">Демо-ящик Службы качества в Roundcube:</span>
+                            <button
+                              type="button"
+                              onClick={() => handleCopy(`rc-u-${m.id}`, "quality@corp.local")}
+                              className="px-2 py-0.5 rounded-md bg-white border border-slate-200 font-mono text-slate-800 hover:border-brand-400 transition"
+                              title="Нажмите, чтобы скопировать логин"
+                            >
+                              {copiedId === `rc-u-${m.id}` ? "✓ Скопировано" : "quality@corp.local"}
+                            </button>
+                            <span className="text-slate-400">/</span>
+                            <button
+                              type="button"
+                              onClick={() => handleCopy(`rc-p-${m.id}`, "QualityPass2026!")}
+                              className="px-2 py-0.5 rounded-md bg-white border border-slate-200 font-mono text-slate-800 hover:border-brand-400 transition"
+                              title="Нажмите, чтобы скопировать пароль"
+                            >
+                              {copiedId === `rc-p-${m.id}` ? "✓ Скопировано" : "QualityPass2026!"}
+                            </button>
+                          </div>
                         </div>
                       )}
 

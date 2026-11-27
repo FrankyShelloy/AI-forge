@@ -10,6 +10,62 @@ import type {
   SystemModelsInfo,
 } from "./types";
 
+const CLIENT_ID_STORAGE_KEY = "sl_client_id";
+const QUALITY_KEY_STORAGE_KEY = "sl_quality_key";
+
+export function getClientId(): string {
+  try {
+    let cid = localStorage.getItem(CLIENT_ID_STORAGE_KEY);
+    if (!cid) {
+      cid =
+        typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `cid-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
+      localStorage.setItem(CLIENT_ID_STORAGE_KEY, cid);
+    }
+    return cid;
+  } catch {
+    return "default";
+  }
+}
+
+export function getQualityKey(): string {
+  try {
+    return sessionStorage.getItem(QUALITY_KEY_STORAGE_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+export function setQualityKey(pin: string | null): void {
+  try {
+    if (pin) sessionStorage.setItem(QUALITY_KEY_STORAGE_KEY, pin);
+    else sessionStorage.removeItem(QUALITY_KEY_STORAGE_KEY);
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function clientHeaders(extra?: Record<string, string>): Record<string, string> {
+  return {
+    "X-Client-Id": getClientId(),
+    ...(extra || {}),
+  };
+}
+
+export async function verifyQualityPin(pin: string): Promise<boolean> {
+  const res = await fetch("/api/auth/verify-quality", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pin }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Неверный ключ" }));
+    throw new Error(err.detail || "Неверный ключ Службы качества");
+  }
+  return true;
+}
+
 export async function fetchHealth(): Promise<HealthInfo> {
   const res = await fetch("/api/health");
   if (!res.ok) throw new Error("Health check failed");
@@ -23,19 +79,24 @@ export async function fetchSystemModels(): Promise<SystemModelsInfo> {
 }
 
 export async function fetchSessions(): Promise<SessionInfo[]> {
-  const res = await fetch("/api/sessions");
+  const res = await fetch("/api/sessions", { headers: clientHeaders() });
   if (!res.ok) throw new Error("Failed to load sessions");
   return res.json();
 }
 
 export async function fetchMessages(sessionId: string): Promise<ChatMessage[]> {
-  const res = await fetch(`/api/sessions/${sessionId}/messages`);
+  const res = await fetch(`/api/sessions/${sessionId}/messages`, {
+    headers: clientHeaders(),
+  });
   if (!res.ok) throw new Error("Failed to load messages");
   return res.json();
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
-  await fetch(`/api/sessions/${sessionId}`, { method: "DELETE" });
+  await fetch(`/api/sessions/${sessionId}`, {
+    method: "DELETE",
+    headers: clientHeaders(),
+  });
 }
 
 export async function manualEscalate(params: {
@@ -45,7 +106,7 @@ export async function manualEscalate(params: {
 }): Promise<EscalationTicket> {
   const res = await fetch("/api/escalate", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: clientHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(params),
   });
   if (!res.ok) throw new Error("Escalation failed");
@@ -87,10 +148,16 @@ export async function toggleFaqStatus(
 ): Promise<void> {
   const res = await fetch(`/api/faqs/${faqId}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "X-Quality-Key": getQualityKey(),
+    },
     body: JSON.stringify({ status }),
   });
-  if (!res.ok) throw new Error("Failed to update FAQ status");
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Ошибка прав доступа" }));
+    throw new Error(err.detail || "Не удалось изменить статус FAQ");
+  }
 }
 
 export async function fetchDocuments(): Promise<IndexedDoc[]> {
@@ -113,7 +180,11 @@ export async function uploadDocx(file: File): Promise<{
 }> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch("/api/documents/upload", { method: "POST", body: form });
+  const res = await fetch("/api/documents/upload", {
+    method: "POST",
+    headers: { "X-Quality-Key": getQualityKey() },
+    body: form,
+  });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: "Ошибка загрузки" }));
     throw new Error(err.detail || "Ошибка загрузки файла");
@@ -133,7 +204,7 @@ export async function streamChat(
 ): Promise<void> {
   const res = await fetch("/api/chat/stream", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: clientHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(params),
   });
   if (!res.ok || !res.body) {
