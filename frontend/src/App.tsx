@@ -231,9 +231,9 @@ export default function App() {
         },
         onStatus: (info) => {
           if (!isStillViewing()) return;
-          const chunkCount = health?.chunks_indexed ?? 611;
+          const chunkLabel = health?.chunks_indexed ? `${health.chunks_indexed} пунктам` : "пунктам";
           const map: Record<string, string> = {
-            retrieving: `Гибридный поиск по ${chunkCount} пунктам регламентов и базе FAQ...`,
+            retrieving: `Гибридный поиск по ${chunkLabel} регламентов и базе FAQ...`,
             clarify: "Выявлена зависимость от дирекции — формулирую уточнение...",
             escalate: "Нормы нет в базе — отправляю реальное письмо в Службу качества...",
             complex_answer: "Сопоставляю требования нескольких дирекций раздельно...",

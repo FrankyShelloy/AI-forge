@@ -303,6 +303,7 @@ async def main() -> None:
             "embedding_tokens": rm["embedding_tokens"],
             "cost_rub": rm["cost_rub"],
             "latency_ms": rm["latency_ms"],
+            "ttft_ms": rm.get("ttft_ms", 0),
         }
     )
     retriever.remove_faq_entry(faq["id"])
@@ -331,7 +332,7 @@ async def main() -> None:
         low_c = cm["content"].lower()
         ok_conf = (
             cm["outcome"] in {"answered", "partial_answer"}
-            and any(p in low_c for p in ("запрещ", "не может быть использов", "не допускается", "нельзя"))
+            and any(p in low_c for p in ("запрещ", "не может быть использов", "не может использов", "не допускается", "нельзя"))
             and (
                 bool(cm.get("has_conflict"))
                 or any(w in low_c for w in ("расхожд", "противореч", "конфликт", "приоритет"))
@@ -353,6 +354,7 @@ async def main() -> None:
                 "embedding_tokens": cm["embedding_tokens"],
                 "cost_rub": cm["cost_rub"],
                 "latency_ms": cm["latency_ms"],
+                "ttft_ms": cm.get("ttft_ms", 0),
             }
         )
     finally:

@@ -144,6 +144,8 @@ class AgentState(TypedDict, total=False):
     citations: list[dict[str, Any]]
     clarification_options: list[str]
     ticket_code: str | None
+    gen_retries: int
+    needs_regen: bool
 
     prompt_tokens: int
     completion_tokens: int
@@ -151,8 +153,18 @@ class AgentState(TypedDict, total=False):
     cost_rub: float
 
 
-def _detect_mentioned_directorates(text: str) -> tuple[list[str], bool]:
-    """Return (list of mentioned directorates, is_complex_or_all)."""
+_GENERIC_DOC_WORDS = {
+    "регламент", "положение", "инструкция", "процедура", "политика",
+    "деятельность", "деятельности", "проектная", "проектной", "пресейловая",
+    "дирекция", "дирекции", "департамент", "департамента", "взаимодействие",
+    "взаимодействия", "порядок", "правила", "организация", "организации",
+}
+
+
+def _detect_mentioned_directorates(
+    text: str, extra_docs: list[dict[str, Any]] | None = None
+) -> tuple[list[str], bool]:
+    """Return (list of mentioned directorates, is_complex_or_all), including dynamically uploaded custom docs."""
     low = text.lower()
     dirs: list[str] = []
     if re.search(r"\b(дбрцт|дбр|бизнес[\s-]решен\w*)\b", low):
@@ -161,6 +173,25 @@ def _detect_mentioned_directorates(text: str) -> tuple[list[str], bool]:
         dirs.append("TECH_DIR")
     if re.search(r"\b(дирекц\w*\s+иб|диб|уиб|инфобез\w*|информационн\w*\s+безопасност\w*|иб)\b", low):
         dirs.append("IB")
+
+    if extra_docs:
+        for d in extra_docs:
+            dcode = d.get("directorate") or ""
+            if not dcode or dcode in {"DBRCT", "TECH_DIR", "IB"} or dcode in dirs:
+                continue
+            lbl = (d.get("directorate_label") or "").lower().strip()
+            title = (d.get("doc_title") or "").lower().strip()
+            if (lbl and lbl in low) or (title and title in low):
+                dirs.append(dcode)
+                continue
+            # Match distinctive stem (>= 5 chars) of custom directorate label
+            words = [
+                w for w in re.findall(r"[а-яёa-z0-9]+", lbl)
+                if len(w) >= 5 and w not in _GENERIC_DOC_WORDS
+            ]
+            if any(w[:5] in low for w in words):
+                dirs.append(dcode)
+
     is_multi = (
         bool(re.search(r"комплексн|нескольк\w*\s+дирекц|все\s+вариант|покаж\w*\s+вариант|не\s+знаю|для\s+всех", low))
         or len(dirs) >= 2
@@ -168,14 +199,18 @@ def _detect_mentioned_directorates(text: str) -> tuple[list[str], bool]:
     return dirs, is_multi
 
 
-def _build_queries(user_message: str, history: list[dict[str, Any]]) -> tuple[str, str]:
+def _build_queries(
+    user_message: str,
+    history: list[dict[str, Any]],
+    extra_docs: list[dict[str, Any]] | None = None,
+) -> tuple[str, str]:
     """Return (clean_search_query, full_effective_query), walking back across multi-turn clarifications."""
     msg = user_message.strip()
     if not history:
         return msg, msg
     last_assistant = next((m for m in reversed(history) if m["role"] == "assistant"), None)
     last_user = next((m for m in reversed(history) if m["role"] == "user"), None)
-    dirs_in_msg, is_multi_msg = _detect_mentioned_directorates(msg)
+    dirs_in_msg, is_multi_msg = _detect_mentioned_directorates(msg, extra_docs=extra_docs)
     is_short_dir_reply = ("?" not in msg) and len(msg.split()) <= 10 and (bool(dirs_in_msg) or is_multi_msg)
 
     if last_user and ((last_assistant and last_assistant.get("outcome") == "clarify") or is_short_dir_reply):
@@ -327,12 +362,20 @@ class RegulationAgent:
         sg.add_edge("short_reply", END)
         sg.add_edge("clarify", END)
         sg.add_edge("escalate", END)
-        sg.add_edge("generate_and_verify", END)
+        sg.add_conditional_edges(
+            "generate_and_verify",
+            self._route_after_generate,
+            {"retry": "generate_and_verify", "done": END},
+        )
         return sg.compile()
 
     @staticmethod
     def _route_after_guard(state: AgentState) -> Literal["blocked", "proceed"]:
         return "blocked" if state.get("guard_blocked") else "proceed"
+
+    @staticmethod
+    def _route_after_generate(state: AgentState) -> Literal["retry", "done"]:
+        return "retry" if state.get("needs_regen") else "done"
 
     @staticmethod
     def _route_after_analyze(
@@ -426,8 +469,10 @@ class RegulationAgent:
             },
         )
         t0 = time.perf_counter()
-        search_query, effective_query = _build_queries(state["user_message"], state.get("history") or [])
-        dirs, is_multi = _detect_mentioned_directorates(effective_query)
+        search_query, effective_query = _build_queries(
+            state["user_message"], state.get("history") or [], extra_docs=docs_meta
+        )
+        dirs, is_multi = _detect_mentioned_directorates(effective_query, extra_docs=docs_meta)
         active_dir = state.get("active_directorate")
 
         dir_filter: str | None = None
@@ -564,6 +609,21 @@ JSON-схема:
         if not valid_ids and decision.action == "faq_answer":
             valid_ids = [f"F{i}" for i in range(1, min(3, len(faq_items) + 1)) if f"F{i}" in source_map]
         decision.selected_source_ids = valid_ids
+
+        # Never treat "what is written in external doc X / link to X" as plain find_doc of loaded regs
+        if decision.action == "find_doc" and re.search(
+            r"(что\s+написано|содержан|по\s+какой\s+ссылк|где\s+скачать)", state["user_message"].lower()
+        ):
+            decision.action = "partial_answer"
+        if decision.action == "partial_answer" and not decision.missing_external_docs:
+            ext_refs = [
+                ref
+                for sid in decision.selected_source_ids
+                if sid in source_map
+                for ref in (source_map[sid].external_doc_refs or [])
+            ]
+            if ext_refs:
+                decision.missing_external_docs = list(dict.fromkeys(ext_refs))[:3]
 
         # Conflict priority safeguard: Official Regulation [S*] ALWAYS outranks Quality FAQ [F*]
         if decision.has_conflict and reg_items:
@@ -885,11 +945,17 @@ JSON-схема:
         extra_notes = []
         if decision.missing_external_docs:
             extra_notes.append(
-                f"ОБЯЗАТЕЛЬНО упомяни, что регламент ссылается на внешние документы ({', '.join(decision.missing_external_docs)}), тексты которых отсутствуют в загруженной базе знаний — НЕ выдумывай их содержание, URL или сторонние системы (типа SharePoint); предложи обратиться к корпоративному Confluence или в Службу качества."
+                f"ОБЯЗАТЕЛЬНО упомяни, что регламент ссылается на внешние документы ({', '.join(decision.missing_external_docs)}), тексты которых отсутствуют в загруженной базе знаний — НЕ выдумывай их содержание, URL или сторонние порталы; предложи обратиться к корпоративному Confluence или в Службу качества."
             )
         if decision.has_conflict:
             extra_notes.append(
                 f"ВНИМАНИЕ — ОБНАРУЖЕН КОНФЛИКТ ИСТОЧНИКОВ ({decision.conflict_note}): официальный регламент [S*] имеет ВЫСШИЙ ПРИОРИТЕТ над разъяснением FAQ [F*]! Сформулируй правило СТРОГО по официальному регламенту [S*], а затем отдельным абзацем «⚠️ Внимание: расхождение источников» явно укажи, в чём запись FAQ [F*] противоречит регламенту, и порекомендуй уточнить актуальность разъяснения в Службе качества."
+            )
+        gen_retries = int(state.get("gen_retries") or 0)
+        if gen_retries > 0:
+            allowed_tags = ", ".join(f"[{t}]" for t in selected_ids)
+            extra_notes.append(
+                f"САМОКОРРЕКЦИЯ: в предыдущей попытке были невалидные ссылки. Используй ИСКЛЮЧИТЕЛЬНО теги из списка: {allowed_tags}."
             )
 
         gen_system = f"""Ты — точный корпоративный ИИ-агент Службы качества Софтлайн.
@@ -944,11 +1010,31 @@ JSON-схема:
 
         raw_answer = "".join(chunks_buf).strip()
 
-        # Programmatic Citation Verification (0 extra LLM calls!)
+        # Programmatic Citation Verification + 1-shot Self-Correction cycle on hallucinated tags
         referenced_tags = CITATION_TAG_RE.findall(raw_answer)
         unique_ref_tags = list(dict.fromkeys(referenced_tags))
         valid_referenced = [t for t in unique_ref_tags if t in source_map]
         invalid_tags = [t for t in unique_ref_tags if t not in source_map]
+
+        trace = list(state.get("trace") or [])
+        if invalid_tags and not valid_referenced and gen_retries < 1:
+            trace.append(
+                {
+                    "step": "self_correction_retry",
+                    "title": "Самокоррекция цитат (LangGraph cycle)",
+                    "duration_ms": int((time.perf_counter() - t_gen) * 1000),
+                    "detail": f"Обнаружены неподтверждённые теги ({', '.join(invalid_tags)}) — повторная генерация со строгим списком источников",
+                }
+            )
+            return {
+                "gen_retries": gen_retries + 1,
+                "needs_regen": True,
+                "trace": trace,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "cost_rub": total_cost,
+            }
+
         for bad in invalid_tags:
             raw_answer = raw_answer.replace(f"[{bad}]", "")
 
@@ -970,7 +1056,6 @@ JSON-схема:
         else:
             cite_detail = f"Привязано опорных источников: {len(citations)} · Галлюцинаций ссылок: 0"
 
-        trace = list(state.get("trace") or [])
         trace.append(
             {
                 "step": "grounded_generation_and_verify",
@@ -992,6 +1077,8 @@ JSON-схема:
             "citations": citations,
             "clarification_options": [],
             "ticket_code": None,
+            "needs_regen": False,
+            "gen_retries": gen_retries,
             "trace": trace,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,

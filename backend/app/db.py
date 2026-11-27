@@ -681,3 +681,14 @@ class Database:
                 dict(r)
                 for r in conn.execute("SELECT * FROM indexed_documents ORDER BY directorate, doc_title").fetchall()
             ]
+
+    def delete_indexed_doc(self, doc_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM indexed_documents WHERE doc_id = ?", (doc_id,)
+            ).fetchone()
+            if not row:
+                return None
+            conn.execute("DELETE FROM document_clauses WHERE doc_id = ?", (doc_id,))
+            conn.execute("DELETE FROM indexed_documents WHERE doc_id = ?", (doc_id,))
+            return dict(row)

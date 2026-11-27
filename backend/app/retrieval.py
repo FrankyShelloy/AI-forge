@@ -365,9 +365,10 @@ class HybridRetriever:
 
     def _sync_faqs(self, faqs: list[dict[str, Any]]) -> int:
         if not faqs:
-            # Also reset Qdrant FAQ collection so no orphaned points resurface later
+            # Clear Qdrant FAQ collection only if stale points remain (avoids unnecessary recreate when empty)
             try:
-                self._reset_collection(FAQ_COLLECTION, self.settings.embedding_dim)
+                if self.qdrant.count(FAQ_COLLECTION).count > 0:
+                    self._reset_collection(FAQ_COLLECTION, self.settings.embedding_dim)
             except Exception as exc:
                 logger.warning("Reset empty FAQ collection skipped: %s", exc)
             with self._lock:

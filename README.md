@@ -32,10 +32,11 @@ flowchart TD
     analyze -- "clarify (< 3 итераций)" --> clarify["5. clarify (кнопки выбора дирекции)"]
     analyze -- "escalate (нет нормы / >= 3 уточнений)" --> escalate["6. escalate (реальный SMTP + CC сотруднику)"]
     analyze -- "answer / complex / partial / faq" --> gen["7. generate_and_verify (Call 2 SSE + проверка [S#]/[F#])"]
+    gen -- "невалидные теги (1 ретрай)" --> gen
     short --> END2([END])
     clarify --> END2
     escalate --> END2
-    gen --> END2
+    gen -- "подтверждено" --> END2
 ```
 
 > **Строго ≤ 2 вызовов LLM и честные замеры задержки (`benchmark_results.json`, ProxyAPI):**

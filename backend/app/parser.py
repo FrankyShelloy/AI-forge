@@ -113,7 +113,7 @@ def parse_docx(path: str | Path) -> list[ParsedChunk]:
     if body is None:
         return []
 
-    raw_items: list[tuple[str, str, str]] = []  # (kind: p|tbl, level, text)
+    raw_items: list[tuple[str, str, str, bool]] = []  # (kind: p|tbl, level, text, is_heading_style)
     for child in body:
         tag = child.tag.split("}")[-1]
         if tag == "p":
@@ -126,11 +126,14 @@ def parse_docx(path: str | Path) -> list[ParsedChunk]:
                 ilvl = num_pr.find("w:ilvl", NS)
                 if ilvl is not None:
                     lvl = f"L{ilvl.attrib.get(W_VAL, '0')}"
-            raw_items.append(("p", lvl, txt))
+            p_style = child.find("./w:pPr/w:pStyle", NS)
+            style_val = (p_style.attrib.get(W_VAL, "") if p_style is not None else "").lower()
+            is_heading = bool(re.search(r"heading\s*[12]|заголовок\s*[12]|title", style_val))
+            raw_items.append(("p", lvl, txt, is_heading))
         elif tag == "tbl":
             md = _extract_table_md(child)
             if md:
-                raw_items.append(("tbl", "", md))
+                raw_items.append(("tbl", "", md, False))
 
     if not raw_items:
         return []
@@ -143,6 +146,8 @@ def parse_docx(path: str | Path) -> list[ParsedChunk]:
     sections: list[dict] = []
     current_sec = {"num": "0", "title": doc_title, "clauses": []}
     current_clause: dict | None = None
+    synth_sec_seq = 0
+    unnumbered_seq = 0
 
     def flush_clause() -> None:
         nonlocal current_clause
@@ -150,7 +155,7 @@ def parse_docx(path: str | Path) -> list[ParsedChunk]:
             current_sec["clauses"].append(current_clause)
         current_clause = None
 
-    for idx, (kind, lvl, text) in enumerate(raw_items):
+    for idx, (kind, lvl, text, is_heading) in enumerate(raw_items):
         if idx == 0 and not SECTION_RE.match(text) and not CLAUSE_RE.match(text):
             # Document main title
             if len(text) < 160:
@@ -169,23 +174,38 @@ def parse_docx(path: str | Path) -> list[ParsedChunk]:
                     "title": sec_m.group(2).strip(),
                     "clauses": [],
                 }
+                unnumbered_seq = 0
                 continue
 
             if clause_m:
                 c_num = clause_m.group(1)
-                # Keep deeply nested 3-level subclauses (e.g. 5.2.3) attached to parent 2-level clause (5.2)
-                # ONLY if parent is short, OR emit as its own child linked to the 2-level parent!
-                # Emitting each numbered clause as its own child while sharing parent_text of the 2-level group
-                # gives exact clause citations (e.g. п. 5.2.2 vs п. 5.2.3) AND full note visibility!
                 flush_clause()
-                current_clause = {"num": c_num, "lines": [text]}
+                current_clause = {"num": c_num, "lines": [text], "unnumbered": False}
                 continue
 
-        # Continuation: bullet list, table, "Важно:", or unnumbered note
+            if is_heading and len(text) < 140:
+                flush_clause()
+                if current_sec["clauses"]:
+                    sections.append(current_sec)
+                synth_sec_seq += 1
+                current_sec = {
+                    "num": str(synth_sec_seq),
+                    "title": text.strip(),
+                    "clauses": [],
+                }
+                unnumbered_seq = 0
+                continue
+
+        # Continuation: bullet list, table, "Важно:", or unnumbered prose block
         prefix = "  - " if lvl == "L0" else ("    • " if lvl == "L1" else "")
         formatted = f"{prefix}{text}" if kind == "p" else f"\n{text}\n"
         if current_clause is None:
-            current_clause = {"num": f"{current_sec['num']}.0", "lines": [formatted]}
+            current_clause = {"num": f"{current_sec['num']}.{unnumbered_seq}", "lines": [formatted], "unnumbered": True}
+        elif current_clause.get("unnumbered") and sum(len(x) for x in current_clause["lines"]) + len(formatted) > 1100:
+            # Fallback window chunking for unnumbered .docx so no text is silently truncated at 2400 chars
+            flush_clause()
+            unnumbered_seq += 1
+            current_clause = {"num": f"{current_sec['num']}.{unnumbered_seq}", "lines": [formatted], "unnumbered": True}
         else:
             current_clause["lines"].append(formatted)
 

@@ -6,9 +6,10 @@ import {
   FileWarning,
   Lock,
   Search,
+  Trash2,
   Upload,
 } from "lucide-react";
-import { fetchDocumentDetail, fetchDocuments, uploadDocx } from "../api";
+import { deleteDocument, fetchDocumentDetail, fetchDocuments, uploadDocx } from "../api";
 import type { DocDetail, IndexedDoc } from "../types";
 
 interface Props {
@@ -184,9 +185,34 @@ export const DocumentsView: React.FC<Props> = ({
                   >
                     {doc.directorate_label}
                   </span>
-                  <span className="text-[11px] font-mono text-slate-400">
-                    {doc.chunk_count} пп.
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] font-mono text-slate-400">
+                      {doc.chunk_count} пп.
+                    </span>
+                    {isQualityRole && doc.directorate.startsWith("CUSTOM_") && (
+                      <span
+                        role="button"
+                        title="Удалить загруженный регламент"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          try {
+                            await deleteDocument(doc.doc_id);
+                            setUploadMsg(`Регламент «${doc.doc_title}» удалён из базы знаний`);
+                            const list = await fetchDocuments();
+                            setDocs(list);
+                            if (selectedId === doc.doc_id) {
+                              setSelectedId(list[0]?.doc_id || null);
+                            }
+                          } catch (err: unknown) {
+                            setUploadMsg(err instanceof Error ? err.message : "Ошибка удаления");
+                          }
+                        }}
+                        className="p-0.5 rounded text-slate-400 hover:text-brand-600 hover:bg-rose-50 transition"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className="text-xs font-bold text-slate-900 leading-snug">
                   {doc.doc_title}

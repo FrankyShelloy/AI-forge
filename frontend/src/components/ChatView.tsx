@@ -144,7 +144,7 @@ export const ChatView: React.FC<Props> = ({
               {/* Trust indicators */}
               <div className="flex flex-wrap items-center justify-center gap-2 mt-5 text-[11px] font-medium text-slate-600">
                 <span className="px-2.5 py-1 rounded-full bg-slate-100/90 border border-slate-200/70">
-                  {health?.docs_indexed ?? 4} действующих регламента · {health?.chunks_indexed ?? 611} пунктов
+                  {health ? `${health.docs_indexed} действующих регламента · ${health.chunks_indexed ?? "…"} пунктов` : "Загрузка индекса регламентов…"}
                 </span>
                 <span className="px-2.5 py-1 rounded-full bg-slate-100/90 border border-slate-200/70">
                   48 терминов корпоративного глоссария

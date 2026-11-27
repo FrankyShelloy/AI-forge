@@ -65,7 +65,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title="Softline Quality AI Agent",
     description="ИИ-агент поиска ответов по корпоративным регламентам (Web UI + DION/Webhook JSON API)",
-    version="2.2.0",
+    version="2.3.0",
     lifespan=lifespan,
 )
 
@@ -125,7 +125,7 @@ def _check_session_access(session_id: str, client_id: str) -> None:
         )
 
 
-@app.get("/robots.txt", include_in_schema=False)
+@app.api_route("/robots.txt", methods=["GET", "HEAD"], include_in_schema=False)
 async def robots_txt() -> PlainTextResponse:
     return PlainTextResponse("User-agent: *\nDisallow: /\n", media_type="text/plain")
 
@@ -135,7 +135,7 @@ async def health() -> dict[str, Any]:
     docs = db.list_indexed_docs()
     return {
         "status": "ok",
-        "version": "2.2.0",
+        "version": "2.3.0",
         "llm_model": settings.llm_model,
         "embedding_model": settings.embedding_model,
         "docs_indexed": len(docs),
@@ -314,8 +314,9 @@ async def list_tickets(x_quality_key: str = Header(default="")) -> list[dict[str
 
 
 @app.get("/api/faqs")
-async def list_faqs() -> list[dict[str, Any]]:
-    return db.list_faqs(active_only=False)
+async def list_faqs(x_quality_key: str = Header(default="")) -> list[dict[str, Any]]:
+    is_quality = (x_quality_key or "").strip() == settings.quality_admin_pin
+    return db.list_faqs(active_only=not is_quality)
 
 
 @app.patch("/api/faqs/{faq_id}")
@@ -400,8 +401,35 @@ async def upload_document(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-# Serve built React SPA if present
+@app.delete("/api/documents/{doc_id}")
+async def delete_document(
+    doc_id: str,
+    x_quality_key: str = Header(default=""),
+) -> dict[str, str]:
+    """Delete a custom uploaded regulation (.docx) cleanly from Qdrant, BM25, SQLite, and disk."""
+    _require_quality_role(x_quality_key, f"удаление регламента {doc_id}")
+    core_ids = {"dbrct_project", "tech_dir_project", "ib_presale", "ib_project"}
+    if doc_id in core_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="Базовые 4 регламента хакатона защищены от случайного удаления.",
+        )
+    deleted = db.delete_indexed_doc(doc_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Регламент не найден")
+    await asyncio.to_thread(retriever.delete_doc_chunks, doc_id)
+    doc_file = Path(settings.docs_dir) / Path(deleted["filename"]).name
+    if doc_file.is_file():
+        try:
+            doc_file.unlink()
+        except Exception as exc:
+            logger.warning("Could not unlink %s: %s", doc_file, exc)
+    return {"status": "deleted", "doc_id": doc_id}
+
+
+# Serve built React SPA if present (strictly confined inside STATIC_DIR to prevent path traversal)
 STATIC_DIR = Path(__file__).parent / "static_dist"
+STATIC_ROOT = STATIC_DIR.resolve()
 if STATIC_DIR.exists():
     assets_dir = STATIC_DIR / "assets"
     if assets_dir.exists():
@@ -409,7 +437,12 @@ if STATIC_DIR.exists():
 
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
-        candidate = STATIC_DIR / full_path
-        if full_path and candidate.is_file():
-            return FileResponse(candidate)
-        return FileResponse(STATIC_DIR / "index.html")
+        rel = full_path.lstrip("/")
+        if rel:
+            try:
+                candidate = (STATIC_ROOT / rel).resolve()
+                if candidate.is_relative_to(STATIC_ROOT) and candidate.is_file():
+                    return FileResponse(candidate)
+            except Exception:
+                pass
+        return FileResponse(STATIC_ROOT / "index.html")

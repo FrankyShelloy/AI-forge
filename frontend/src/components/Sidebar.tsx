@@ -114,7 +114,7 @@ export const Sidebar: React.FC<Props> = ({
           <div className="p-2.5 rounded-xl bg-white border border-slate-200/80 text-[11px] text-slate-500 flex items-center justify-between">
             <div>
               <div className="font-semibold text-slate-700">
-                {health.docs_indexed} регламента · {health.chunks_indexed || 611} пп.
+                {health.docs_indexed} регламента · {health.chunks_indexed ?? "…"} пп.
               </div>
               <div className="text-[10px] text-slate-400 mt-0.5">
                 Проверенных FAQ: <span className="text-emerald-600 font-semibold">{health.faq_active}</span>

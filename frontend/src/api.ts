@@ -169,7 +169,10 @@ export async function fetchTickets(): Promise<EscalationTicket[]> {
 }
 
 export async function fetchFaqs(): Promise<FaqEntry[]> {
-  const res = await fetch("/api/faqs");
+  const key = getQualityKey();
+  const res = await fetch("/api/faqs", {
+    headers: key ? { "X-Quality-Key": key } : {},
+  });
   if (!res.ok) throw new Error("Failed to load FAQs");
   return res.json();
 }
@@ -222,6 +225,17 @@ export async function uploadDocx(file: File): Promise<{
     throw new Error(err.detail || "Ошибка загрузки файла");
   }
   return res.json();
+}
+
+export async function deleteDocument(docId: string): Promise<void> {
+  const res = await fetch(`/api/documents/${docId}`, {
+    method: "DELETE",
+    headers: { "X-Quality-Key": getQualityKey() },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Ошибка удаления" }));
+    throw new Error(err.detail || "Не удалось удалить документ");
+  }
 }
 
 export async function streamChat(
