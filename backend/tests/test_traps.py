@@ -48,12 +48,18 @@ async def main() -> None:
     settings = get_settings()
     tmpdir = Path(tempfile.mkdtemp(prefix="aiforge_test_"))
     settings.sqlite_path = str(tmpdir / "test.db")
-    settings.qdrant_local_path = str(tmpdir / "qdrant")
-    settings.docs_dir = str(Path(__file__).resolve().parents[2] / "Поиск ответов по корпоративным документам")
+    docker_docs = Path("/app/docs")
+    if docker_docs.exists() and any(docker_docs.glob("*.docx")):
+        settings.docs_dir = str(docker_docs)
+        # Reuse the fast Rust qdrant:6333 service already running in Docker Compose
+        settings.qdrant_local_path = ""
+    else:
+        settings.qdrant_local_path = str(tmpdir / "qdrant")
+        settings.docs_dir = str(Path(__file__).resolve().parents[2] / "Поиск ответов по корпоративным документам")
 
     db = Database(settings.sqlite_path)
     retriever = HybridRetriever(settings, db)
-    stats = retriever.bootstrap_index(force_reindex=True)
+    stats = retriever.bootstrap_index(force_reindex=False)
     print(f"Indexed KB: {stats}")
 
     email_svc = StubEmailService(settings, db, retriever)
@@ -106,7 +112,8 @@ async def main() -> None:
             "EDGE_MISSING_EXTERNAL_DOC",
             ["Что написано в регламенте подбора субподрядчика для ДБРЦТ и по какой ссылке его открыть?"],
             lambda r: r[0]["message"]["outcome"] in {"answered", "partial_answer", "escalated"}
-            and ("нет" in r[0]["message"]["content"].lower() or "отсутств" in r[0]["message"]["content"].lower() or r[0]["message"]["outcome"] == "escalated"),
+            and any(w in r[0]["message"]["content"].lower() for w in ("нет", "отсутств", "не загружен", "не найден"))
+            and "sharepoint" not in r[0]["message"]["content"].lower(),
         ),
         # 7. Edge-case: Out of scope -> redirect to manager (NOT Quality escalation!)
         (
@@ -138,6 +145,7 @@ async def main() -> None:
             res = await run_turn(agent, sid, p)
             sid = res["session_id"]
             turn_results.append(res)
+            await asyncio.sleep(1.5)
         ok = check_fn(turn_results)
         passed += int(ok)
         last = turn_results[-1]["message"]
@@ -196,6 +204,8 @@ async def main() -> None:
     )
 
     total_tests = len(tests) + 1
+    # Clean up the synthetic test FAQ point from Qdrant so production stays spotless
+    retriever.remove_faq_entry(faq["id"])
     print(f"\nSUMMARY: {passed}/{total_tests} passed")
     out_path = Path(__file__).resolve().parent / "benchmark_results.json"
     out_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")

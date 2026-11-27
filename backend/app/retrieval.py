@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -80,11 +81,12 @@ class HybridRetriever:
         else:
             self.qdrant = QdrantClient(url=settings.qdrant_url, timeout=15.0)
 
-        # In-memory BM25 corpora synced with Qdrant
+        # In-memory BM25 corpora synced with Qdrant + tiny query embedding LRU cache
         self._reg_docs: list[dict[str, Any]] = []
         self._reg_bm25: BM25Okapi | None = None
         self._faq_docs: list[dict[str, Any]] = []
         self._faq_bm25: BM25Okapi | None = None
+        self._emb_cache: dict[str, tuple[list[float], int, float]] = {}
 
     def _ensure_collection(self, name: str, dim: int) -> None:
         existing = {c.name for c in self.qdrant.get_collections().collections}
@@ -95,24 +97,42 @@ class HybridRetriever:
             )
 
     def embed_texts(self, texts: list[str]) -> tuple[list[list[float]], int, float]:
-        """Compute embeddings via OpenAI-compatible API; returns (vectors, tokens, cost_rub)."""
+        """Compute embeddings via OpenAI-compatible API with 429 retry & single-query cache."""
         if not texts:
             return [], 0, 0.0
+        if len(texts) == 1 and texts[0] in self._emb_cache:
+            vec, toks, cost = self._emb_cache[texts[0]]
+            return [vec], toks, 0.0
+
         vectors: list[list[float]] = []
         total_tokens = 0
         total_cost = 0.0
         batch_size = 48
         for i in range(0, len(texts), batch_size):
             batch = texts[i : i + batch_size]
-            resp = self.openai.embeddings.create(
-                model=self.settings.embedding_model,
-                input=batch,
-            )
+            resp = None
+            for attempt in range(4):
+                try:
+                    resp = self.openai.embeddings.create(
+                        model=self.settings.embedding_model,
+                        input=batch,
+                    )
+                    break
+                except Exception as exc:
+                    if "429" in str(exc) and attempt < 3:
+                        time.sleep(2.0 * (attempt + 1))
+                        continue
+                    raise
+            assert resp is not None
             vectors.extend([d.embedding for d in resp.data])
             if resp.usage:
                 total_tokens += int(getattr(resp.usage, "prompt_tokens", 0) or getattr(resp.usage, "total_tokens", 0) or 0)
                 extra = getattr(resp.usage, "model_extra", None) or {}
                 total_cost += float(extra.get("cost_rub", 0.0) or 0.0)
+        if len(texts) == 1 and vectors:
+            if len(self._emb_cache) > 256:
+                self._emb_cache.clear()
+            self._emb_cache[texts[0]] = (vectors[0], total_tokens, total_cost)
         return vectors, total_tokens, total_cost
 
     def _rebuild_bm25_regs(self) -> None:
@@ -323,120 +343,131 @@ class HybridRetriever:
         query: str,
         *,
         directorate_filter: str | None = None,
+        directorates_list: list[str] | None = None,
         top_k_regs: int = 8,
         top_k_faq: int = 3,
     ) -> tuple[list[RetrievedItem], list[RetrievedItem], int, float, list[str]]:
         """Execute hybrid Dense + BM25 + RRF search across Regulations and Verified FAQ.
 
-        Returns: (reg_items, faq_items, embedding_tokens, embedding_cost_rub, matched_glossary)
+        Supports single-directorate filter, balanced cross-directorate search, OR explicit
+        multi-directorate search (e.g. ['DBRCT', 'TECH_DIR'] for complex projects) using
+        a SINGLE embedding API call.
         """
         expanded_query, matched_glossary = expand_query_with_glossary(query)
         vectors, emb_tokens, emb_cost = self.embed_texts([expanded_query])
         q_vec = vectors[0]
 
-        # 1. Search official regulations (Dense + BM25 -> RRF)
-        q_filter = None
-        if directorate_filter and directorate_filter in {"DBRCT", "TECH_DIR", "IB"}:
-            q_filter = qm.Filter(
-                must=[qm.FieldCondition(key="directorate", match=qm.MatchValue(value=directorate_filter))]
-            )
-
-        dense_hits = self.qdrant.query_points(
-            collection_name=REG_COLLECTION,
-            query=q_vec,
-            query_filter=q_filter,
-            limit=24,
-            with_payload=True,
-        ).points
-
-        rrf_scores: dict[str, float] = {}
-        payload_by_id: dict[str, dict[str, Any]] = {}
-        dense_sim_by_id: dict[str, float] = {}
-        k_rrf = 60.0
-
-        for rank, pt in enumerate(dense_hits):
-            p = pt.payload or {}
-            cid = p.get("chunk_id")
-            if not cid:
-                continue
-            payload_by_id[cid] = p
-            dense_sim_by_id[cid] = float(pt.score)
-            # Weight dense slightly higher for paraphrased queries
-            rrf_scores[cid] = rrf_scores.get(cid, 0.0) + 1.3 / (k_rrf + rank + 1)
-
-        # BM25 lexical search over expanded query
         q_tokens = _tokenize(expanded_query)
         with self._lock:
             bm25 = self._reg_bm25
             reg_docs = list(self._reg_docs)
-        if bm25 and q_tokens:
-            scores = bm25.get_scores(q_tokens)
-            indexed_scores = [
-                (idx, float(sc))
-                for idx, sc in enumerate(scores)
-                if sc > 0.0
-                and (
-                    not directorate_filter
-                    or directorate_filter not in {"DBRCT", "TECH_DIR", "IB"}
-                    or reg_docs[idx]["directorate"] == directorate_filter
+
+        def _search_regs_for_filter(dir_val: str | None, limit_k: int) -> list[RetrievedItem]:
+            q_filter = None
+            if dir_val and dir_val in {"DBRCT", "TECH_DIR", "IB"}:
+                q_filter = qm.Filter(
+                    must=[qm.FieldCondition(key="directorate", match=qm.MatchValue(value=dir_val))]
                 )
-            ]
-            indexed_scores.sort(key=lambda x: x[1], reverse=True)
-            for rank, (idx, _) in enumerate(indexed_scores[:24]):
-                p = reg_docs[idx]
-                cid = p["chunk_id"]
+            dense_hits = self.qdrant.query_points(
+                collection_name=REG_COLLECTION,
+                query=q_vec,
+                query_filter=q_filter,
+                limit=24,
+                with_payload=True,
+            ).points
+
+            rrf_scores: dict[str, float] = {}
+            payload_by_id: dict[str, dict[str, Any]] = {}
+            dense_sim_by_id: dict[str, float] = {}
+            k_rrf = 60.0
+
+            for rank, pt in enumerate(dense_hits):
+                p = pt.payload or {}
+                cid = p.get("chunk_id")
+                if not cid:
+                    continue
                 payload_by_id[cid] = p
-                rrf_scores[cid] = rrf_scores.get(cid, 0.0) + 1.0 / (k_rrf + rank + 1)
+                dense_sim_by_id[cid] = float(pt.score)
+                rrf_scores[cid] = rrf_scores.get(cid, 0.0) + 1.3 / (k_rrf + rank + 1)
 
-        ranked_ids = sorted(rrf_scores.keys(), key=lambda x: rrf_scores[x], reverse=True)
+            if bm25 and q_tokens:
+                scores = bm25.get_scores(q_tokens)
+                indexed_scores = [
+                    (idx, float(sc))
+                    for idx, sc in enumerate(scores)
+                    if sc > 0.0
+                    and (
+                        not dir_val
+                        or dir_val not in {"DBRCT", "TECH_DIR", "IB"}
+                        or reg_docs[idx]["directorate"] == dir_val
+                    )
+                ]
+                indexed_scores.sort(key=lambda x: x[1], reverse=True)
+                for rank, (idx, _) in enumerate(indexed_scores[:24]):
+                    p = reg_docs[idx]
+                    cid = p["chunk_id"]
+                    payload_by_id[cid] = p
+                    rrf_scores[cid] = rrf_scores.get(cid, 0.0) + 1.0 / (k_rrf + rank + 1)
 
-        # When no directorate filter is set, ensure cross-directorate diversity so traps comparing
-        # DBRCT vs TECH_DIR vs IB surface clauses from each applicable directorate!
-        selected_ids: list[str] = []
-        if not directorate_filter:
-            seen_dirs: dict[str, int] = {}
-            # First pass: take up to 3 per directorate in RRF order
-            for cid in ranked_ids:
-                if len(selected_ids) >= top_k_regs:
-                    break
-                d = payload_by_id[cid]["directorate"]
-                if seen_dirs.get(d, 0) < 3:
-                    selected_ids.append(cid)
-                    seen_dirs[d] = seen_dirs.get(d, 0) + 1
-            # Fill any remaining slots
-            for cid in ranked_ids:
-                if len(selected_ids) >= top_k_regs:
-                    break
-                if cid not in selected_ids:
-                    selected_ids.append(cid)
-        else:
-            selected_ids = ranked_ids[:top_k_regs]
+            ranked_ids = sorted(rrf_scores.keys(), key=lambda x: rrf_scores[x], reverse=True)
+            selected_ids: list[str] = []
+            if not dir_val:
+                seen_dirs: dict[str, int] = {}
+                for cid in ranked_ids:
+                    if len(selected_ids) >= limit_k:
+                        break
+                    d = payload_by_id[cid]["directorate"]
+                    if seen_dirs.get(d, 0) < 3:
+                        selected_ids.append(cid)
+                        seen_dirs[d] = seen_dirs.get(d, 0) + 1
+                for cid in ranked_ids:
+                    if len(selected_ids) >= limit_k:
+                        break
+                    if cid not in selected_ids:
+                        selected_ids.append(cid)
+            else:
+                selected_ids = ranked_ids[:limit_k]
 
-        reg_items: list[RetrievedItem] = []
-        for cid in selected_ids:
-            p = payload_by_id[cid]
-            sim = dense_sim_by_id.get(cid, 0.0)
-            # Combine normalized dense similarity with RRF boost for readable relevance score
-            score = round(sim if sim > 0 else min(0.85, rrf_scores[cid] * 25.0), 4)
-            reg_items.append(
-                RetrievedItem(
-                    id=cid,
-                    source_type="official_regulation",
-                    priority_rank=1,
-                    score=score,
-                    doc_id=p["doc_id"],
-                    doc_title=p["doc_title"],
-                    directorate=p["directorate"],
-                    directorate_label=p["directorate_label"],
-                    stage=p["stage"],
-                    section_num=p["section_num"],
-                    section_title=p["section_title"],
-                    clause_num=p["clause_num"],
-                    parent_text=p["parent_text"],
-                    raw_text=p["raw_clause_text"],
-                    external_doc_refs=p.get("external_doc_refs") or [],
+            out: list[RetrievedItem] = []
+            for cid in selected_ids:
+                p = payload_by_id[cid]
+                sim = dense_sim_by_id.get(cid, 0.0)
+                score = round(sim if sim > 0 else min(0.85, rrf_scores[cid] * 25.0), 4)
+                out.append(
+                    RetrievedItem(
+                        id=cid,
+                        source_type="official_regulation",
+                        priority_rank=1,
+                        score=score,
+                        doc_id=p["doc_id"],
+                        doc_title=p["doc_title"],
+                        directorate=p["directorate"],
+                        directorate_label=p["directorate_label"],
+                        stage=p["stage"],
+                        section_num=p["section_num"],
+                        section_title=p["section_title"],
+                        clause_num=p["clause_num"],
+                        parent_text=p["parent_text"],
+                        raw_text=p["raw_clause_text"],
+                        external_doc_refs=p.get("external_doc_refs") or [],
+                    )
                 )
-            )
+            return out
+
+        # 1. Search official regulations
+        if directorates_list and len(directorates_list) >= 2:
+            per_dir = max(3, top_k_regs // len(directorates_list))
+            reg_items: list[RetrievedItem] = []
+            seen_cids: set[str] = set()
+            for dcode in directorates_list:
+                for it in _search_regs_for_filter(dcode, per_dir):
+                    if it.id not in seen_cids:
+                        seen_cids.add(it.id)
+                        reg_items.append(it)
+        else:
+            reg_items = _search_regs_for_filter(directorate_filter, top_k_regs)
+
+        k_rrf = 60.0
 
         # 2. Search verified Quality Service FAQ
         faq_items: list[RetrievedItem] = []

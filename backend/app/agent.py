@@ -11,6 +11,7 @@ Graph flow:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -82,43 +83,47 @@ class AgentState(TypedDict, total=False):
     cost_rub: float
 
 
-def _detect_explicit_directorate(text: str) -> str | None:
-    """Detect if the current message explicitly specifies a single directorate or complex project."""
+def _detect_mentioned_directorates(text: str) -> tuple[list[str], bool]:
+    """Return (list of mentioned directorates, is_complex_or_all)."""
     low = text.lower()
-    has_dbr = bool(re.search(r"\b(дбрцт|дбр|бизнес[\s-]решен\w*)\b", low))
-    has_tech = bool(re.search(r"\b(техдирекц\w*|техническ\w*\s+дирекц\w*|тд)\b", low))
-    has_ib = bool(re.search(r"\b(дирекц\w*\s+иб|диб|уиб|инфобез\w*|информационн\w*\s+безопасност\w*|\bиб\b)\b", low))
-    has_multi = bool(re.search(r"комплексн|нескольк\w*\s+дирекц|все\s+вариант|не\s+знаю", low))
-
-    count = int(has_dbr) + int(has_tech) + int(has_ib)
-    if has_multi or count >= 2:
-        return "MULTI"
-    if has_dbr:
-        return "DBRCT"
-    if has_tech:
-        return "TECH_DIR"
-    if has_ib:
-        return "IB"
-    return None
+    dirs: list[str] = []
+    if re.search(r"\b(дбрцт|дбр|бизнес[\s-]решен\w*)\b", low):
+        dirs.append("DBRCT")
+    if re.search(r"\b(техдирекц\w*|техническ\w*\s+дирекц\w*|тд)\b", low):
+        dirs.append("TECH_DIR")
+    if re.search(r"\b(дирекц\w*\s+иб|диб|уиб|инфобез\w*|информационн\w*\s+безопасност\w*|иб)\b", low):
+        dirs.append("IB")
+    is_multi = bool(re.search(r"комплексн|нескольк\w*\s+дирекц|все\s+вариант|не\s+знаю", low)) or len(dirs) >= 2
+    return dirs, is_multi
 
 
-def _build_effective_query(user_message: str, history: list[dict[str, Any]]) -> str:
-    """If the user replied to a clarifying question with a short answer, fuse with the prior user question."""
+def _build_queries(user_message: str, history: list[dict[str, Any]]) -> tuple[str, str]:
+    """Return (clean_search_query, full_effective_query).
+
+    Keeping `clean_search_query` free of clarification boilerplate ('Комплексный проект...')
+    prevents retrieval drift toward generic 'complex project' clauses while preserving
+    the user's directorate choice in `full_effective_query` for the LLM!
+    """
     msg = user_message.strip()
     if not history:
-        return msg
+        return msg, msg
     last_assistant = next((m for m in reversed(history) if m["role"] == "assistant"), None)
     last_user = next((m for m in reversed(history) if m["role"] == "user"), None)
-    if last_assistant and last_assistant.get("outcome") == "clarify" and last_user:
-        # Combine original question + user's clarification
-        return f"{last_user['content']} (Уточнение сотрудника: {msg})"
+    dirs_in_msg, is_multi_msg = _detect_mentioned_directorates(msg)
+    is_short_dir_reply = (
+        ("?" not in msg)
+        and len(msg.split()) <= 10
+        and (bool(dirs_in_msg) or is_multi_msg)
+    )
+    if last_user and ((last_assistant and last_assistant.get("outcome") == "clarify") or is_short_dir_reply):
+        return last_user["content"].strip(), f"{last_user['content']} (Уточнение сотрудника: {msg})"
     if len(msg.split()) <= 4 and last_user:
-        return f"{last_user['content']} {msg}"
-    return msg
+        return last_user["content"].strip(), f"{last_user['content']} {msg}"
+    return msg, msg
 
 
 def _format_sources_for_prompt(
-    reg_items: list[RetrievedItem], faq_items: list[RetrievedItem]
+    reg_items: list[RetrievedItem], faq_items: list[RetrievedItem], max_chars_per_item: int = 850
 ) -> tuple[str, dict[str, RetrievedItem]]:
     source_map: dict[str, RetrievedItem] = {}
     blocks: list[str] = []
@@ -129,9 +134,10 @@ def _format_sources_for_prompt(
             sid = f"S{idx}"
             source_map[sid] = item
             ext = f" | Упомянутые внешние док-ты: {', '.join(item.external_doc_refs)}" if item.external_doc_refs else ""
+            body = item.parent_text[:max_chars_per_item] + ("..." if len(item.parent_text) > max_chars_per_item else "")
             blocks.append(
                 f"[{sid}] ({item.directorate_label} | {item.doc_title} | Раздел {item.section_num}. {item.section_title} | п. {item.clause_num} | rel={item.score}{ext})\n"
-                f"{item.parent_text}"
+                f"{body}"
             )
 
     if faq_items:
@@ -200,28 +206,32 @@ class RegulationAgent:
         return sg.compile()
 
     async def _node_retrieve(self, state: AgentState) -> dict[str, Any]:
-        effective_query = _build_effective_query(state["user_message"], state.get("history") or [])
-        explicit_dir = _detect_explicit_directorate(effective_query)
+        search_query, effective_query = _build_queries(state["user_message"], state.get("history") or [])
+        dirs, is_multi = _detect_mentioned_directorates(effective_query)
         active_dir = state.get("active_directorate")
 
         dir_filter: str | None = None
-        if explicit_dir in {"DBRCT", "TECH_DIR", "IB"}:
-            dir_filter = explicit_dir
-        elif explicit_dir == "MULTI":
-            dir_filter = None
+        dirs_list: list[str] | None = None
+        if len(dirs) >= 2:
+            dirs_list = dirs
+        elif is_multi:
+            dirs_list = ["DBRCT", "TECH_DIR", "IB"]
+        elif len(dirs) == 1:
+            dir_filter = dirs[0]
         elif active_dir in {"DBRCT", "TECH_DIR", "IB"} and state.get("clarification_round", 0) > 0:
             dir_filter = active_dir
 
         reg_items, faq_items, emb_tokens, emb_cost, matched_glossary = self.retriever.search(
-            effective_query,
+            search_query,
             directorate_filter=dir_filter,
-            top_k_regs=9,
-            top_k_faq=3,
+            directorates_list=dirs_list,
+            top_k_regs=6,
+            top_k_faq=2,
         )
         _, source_map = _format_sources_for_prompt(reg_items, faq_items)
         return {
             "effective_query": effective_query,
-            "directorate_filter": dir_filter or explicit_dir,
+            "directorate_filter": "MULTI" if is_multi else dir_filter,
             "matched_glossary": matched_glossary,
             "reg_items": reg_items,
             "faq_items": faq_items,
@@ -257,14 +267,14 @@ class RegulationAgent:
 1. "off_topic": запрос на посторонние задачи общего ИИ (сделай follow-up встречи, курс доллара, напиши код, переведи текст, погода, анекдот). Заполни short_response вежливым отказом.
 2. "out_of_scope": рабочий вопрос сотрудника, но ЯВНО вне области регламентов проектной/пресейловой деятельности (например: размер личной премии, зарплата, маржа конкретной сделки, график отпуска, личные HR-вопросы). Заполни short_response: объясни, что это вне базы регламентов, и направь к непосредственному руководителю / АМ / HR. НЕ отправляй такое в Службу качества!
 3. "find_doc": пользователь просит именно найти/дать название регламента, а не пересказывать его содержание. Заполни selected_source_ids и short_response со списком подходящих регламентов.
-4. "faq_answer": если в официальных регламентах [S*] ответа нет, НО есть подходящее проверенное разъяснение Службы качества [F*] — выбери "faq_answer" и укажи [F*] в selected_source_ids!
-5. "clarify": выбери ТОЛЬКО если:
+4. "faq_answer": если в официальных регламентах [S*] НЕТ прямого ответа на заданный вопрос, НО есть подходящее проверенное разъяснение Службы качества [F*] — выбери СТРОГО "faq_answer" и укажи в selected_source_ids ТОЛЬКО релевантные ["F1"] (НЕ добавляй посторонние [S*]!).
+5. "clarify": выбери ОБЯЗАТЕЛЬНО если:
    - вопрос относится к регламентам,
-   - сотрудник НЕ указал подразделение (и НЕ указал «комплексный проект» / «не знаю подразделение»),
-   - в найденных регламентах [S*] правила/сроки/роли РЕАЛЬНО ОТЛИЧАЮТСЯ между дирекциями (ДБРЦТ, Техническая дирекция, Дирекция ИБ),
+   - сотрудник НЕ указал конкретную дирекцию (и НЕ указал «комплексный проект» / «не знаю подразделение»),
+   - в найденных регламентах [S*] правила/сроки/роли/исключения ОТЛИЧАЮТСЯ между дирекциями (ДБРЦТ, Техническая дирекция, Дирекция ИБ — например, разные сроки инициации расчёта, разные условия по бюджетной оценке/RFI, разные правила старта без договора или роли подрядчиков),
    - и текущий раунд уточнений ({clar_round}) < {max_rounds}.
-   Тогда сформулируй конкретный clarification_question и 3–5 коротких кнопок в clarification_options (обязательно включи варианты применимых дирекций + «Комплексный проект (несколько дирекций)» + «Не знаю подразделение — покажите варианты»).
-   ВАЖНО: если вопрос касается ТОЛЬКО одной дирекции или пользователь уже уточнил дирекцию — НЕ уточняй повторно, отвечай сразу!
+   НЕ отвечай сразу за все дирекции при первом абстрактном вопросе — сначала уточни подразделение! Сформулируй конкретный clarification_question и 3–5 коротких кнопок в clarification_options (включи применимые дирекции + «Комплексный проект (несколько дирекций)» + «Не знаю подразделение — покажите варианты»).
+   ВАЖНО: если пользователь уже назвал конкретную дирекцию ИЛИ вопрос относится только к одной дирекции — НЕ уточняй, отвечай сразу!
 6. "complex_answer": если сотрудник указал несколько дирекций / комплексный проект (например, ИБ + Техдирекция или ДБРЦТ + Техдирекция) — выбери "complex_answer" и включи в selected_source_ids источники КАЖДОЙ применимой дирекции!
 7. "answer_all_variants": если сотрудник ответил, что не знает подразделение — покажи варианты по каждой применимой дирекции отдельно.
 8. "answer" или "partial_answer": если в [S*] (и/или [F*]) есть прямой подтверждённый ответ.
@@ -299,16 +309,26 @@ class RegulationAgent:
             f"Найденные источники:\n{sources_text}"
         )
 
-        resp = await self.client.chat.completions.create(
-            model=self.settings.llm_model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.0,
-            max_tokens=500,
-        )
+        resp = None
+        for attempt in range(4):
+            try:
+                resp = await self.client.chat.completions.create(
+                    model=self.settings.llm_model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.0,
+                    max_tokens=450,
+                )
+                break
+            except Exception as exc:
+                if "429" in str(exc) and attempt < 3:
+                    await asyncio.sleep(2.0 * (attempt + 1))
+                    continue
+                raise
+        assert resp is not None
         raw_content = resp.choices[0].message.content or "{}"
         parsed = _parse_json_safe(raw_content)
         try:
@@ -337,6 +357,14 @@ class RegulationAgent:
         if not valid_ids and decision.action == "faq_answer":
             valid_ids = [f"F{i}" for i in range(1, min(3, len(faq_items) + 1)) if f"F{i}" in source_map]
         decision.selected_source_ids = valid_ids
+
+        # Hard anti-hallucination guardrail: NEVER generate an answer when no verified sources exist
+        if (
+            decision.action in {"answer", "complex_answer", "partial_answer", "answer_all_variants", "faq_answer"}
+            and not decision.selected_source_ids
+        ):
+            decision.action = "escalate"
+            decision.reasoning = "Hard guardrail: no retrieved sources to ground the answer."
 
         pt, ct, cost = _usage_stats(resp.usage)
         return {
@@ -544,7 +572,7 @@ class RegulationAgent:
             extra_notes = []
             if decision.missing_external_docs:
                 extra_notes.append(
-                    f"ОБЯЗАТЕЛЬНО упомяни, что регламент ссылается на внешние документы ({', '.join(decision.missing_external_docs)}), тексты которых отсутствуют в загруженной базе знаний — НЕ выдумывай их содержание и URL."
+                    f"ОБЯЗАТЕЛЬНО упомяни, что регламент ссылается на внешние документы ({', '.join(decision.missing_external_docs)}), тексты которых отсутствуют в загруженной базе знаний — НЕ выдумывай их содержание, URL или названия сторонних систем (типа SharePoint); предложи обратиться к корпоративному Confluence или в Службу качества."
                 )
             if decision.has_conflict:
                 extra_notes.append(
@@ -556,7 +584,7 @@ class RegulationAgent:
 
 СТРОГИЕ ПРАВИЛА:
 1. НИКАКИХ галлюцинаций и додумывания из общих знаний. Каждое существенное утверждение, срок, роль или исключение подтверждай ссылкой в формате [S1], [S2] или [F1] строго из списка источников ниже.
-2. Сохраняй все оговорки, условия и исключения из пунктов (не упрощай до потери смысла).
+2. Сохраняй все оговорки, условия и исключения из пунктов (не упрощай до потери смысла), но НЕ добавляй факты из посторонних источников, которые не относятся к заданному вопросу.
 3. {mode_instructions}
 {' '.join(extra_notes)}
 4. Формат: краткий структурированный Markdown (списки/жирный текст для сроков и ролей), без воды и длинных вступлений."""
@@ -566,17 +594,27 @@ class RegulationAgent:
                 f"Подтверждённые источники:\n{selected_context}"
             )
 
-            stream = await self.client.chat.completions.create(
-                model=self.settings.llm_model,
-                messages=[
-                    {"role": "system", "content": gen_system},
-                    {"role": "user", "content": gen_user},
-                ],
-                temperature=0.1,
-                max_tokens=900,
-                stream=True,
-                stream_options={"include_usage": True},
-            )
+            stream = None
+            for attempt in range(4):
+                try:
+                    stream = await self.client.chat.completions.create(
+                        model=self.settings.llm_model,
+                        messages=[
+                            {"role": "system", "content": gen_system},
+                            {"role": "user", "content": gen_user},
+                        ],
+                        temperature=0.1,
+                        max_tokens=1100,
+                        stream=True,
+                        stream_options={"include_usage": True},
+                    )
+                    break
+                except Exception as exc:
+                    if "429" in str(exc) and attempt < 3:
+                        await asyncio.sleep(2.0 * (attempt + 1))
+                        continue
+                    raise
+            assert stream is not None
 
             chunks_buf: list[str] = []
             async for chunk in stream:

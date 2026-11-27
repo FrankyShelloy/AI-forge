@@ -7,6 +7,7 @@ import email
 import imaplib
 import logging
 import re
+import ssl
 from email.header import decode_header
 from email.message import EmailMessage
 from email.utils import make_msgid, parseaddr
@@ -165,6 +166,7 @@ class EmailHITLService:
                 password=self.settings.bot_email_password or None,
                 start_tls=self.settings.smtp_use_tls,
                 use_tls=self.settings.smtp_use_ssl,
+                validate_certs=self.settings.mail_validate_certs,
                 timeout=12,
             )
             status = "sent"
@@ -190,10 +192,21 @@ class EmailHITLService:
         errors: list[str] = []
 
         try:
+            ssl_ctx = (
+                ssl.create_default_context()
+                if self.settings.mail_validate_certs
+                else ssl._create_unverified_context()
+            )
             if self.settings.imap_use_ssl:
-                mail = imaplib.IMAP4_SSL(self.settings.imap_host, self.settings.imap_port)
+                mail = imaplib.IMAP4_SSL(
+                    self.settings.imap_host, self.settings.imap_port, ssl_context=ssl_ctx
+                )
             else:
                 mail = imaplib.IMAP4(self.settings.imap_host, self.settings.imap_port)
+                try:
+                    mail.starttls(ssl_context=ssl_ctx)
+                except Exception:
+                    pass
             mail.login(self.settings.bot_email, self.settings.bot_email_password)
             mail.select("INBOX")
         except Exception as exc:

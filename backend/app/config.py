@@ -26,11 +26,12 @@ class Settings(BaseSettings):
     # Email HITL
     smtp_host: str = "mail"
     smtp_port: int = 587
-    smtp_use_tls: bool = False
+    smtp_use_tls: bool = True
     smtp_use_ssl: bool = False
     imap_host: str = "mail"
-    imap_port: int = 143
-    imap_use_ssl: bool = False
+    imap_port: int = 993
+    imap_use_ssl: bool = True
+    mail_validate_certs: bool = False
 
     bot_email: str = "bot@corp.local"
     bot_email_password: str = "BotPass2026!"
