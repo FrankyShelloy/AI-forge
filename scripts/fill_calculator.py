@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import openpyxl
+from openpyxl.styles import Alignment
 
 
 def main() -> None:
@@ -77,21 +78,43 @@ def main() -> None:
     for col in "ABCDEFGH":
         ws[f"{col}12"] = None
 
-    # Comments (up to 3 rows: A17, A18, A19) — with direct pricing URLs & official brief monthly volume!
+    # Comments (up to 3 rows: A17, A18, A19) — concise 2-line notes with pricing URLs & official brief monthly volume
     ws["A17"] = (
-        f"Прайсы (Apache 2.0): https://openrouter.ai/qwen/qwen3-30b-a3b-instruct-2507 ($0.09/$0.30 за 1M tok) "
-        f"и https://openrouter.ai/qwen/qwen3-embedding-4b ($0.02/1M); стенд ProxyAPI https://proxyapi.ru/pricing. "
-        f"Токены — средние по {len(rows)} замерам (18 автотестов на 4 регламентах)."
+        f"Прайсы (Apache 2.0): openrouter.ai/qwen/qwen3-30b-a3b-instruct-2507 ($0.09/$0.30 за 1M) "
+        f"и openrouter.ai/qwen/qwen3-embedding-4b ($0.02/1M); стенд ProxyAPI (proxyapi.ru/pricing). "
+        f"Токены — средние по {len(rows)} замерам (4 регламента)."
     )
     ws["A18"] = (
         "Локальный контур РФ 152-ФЗ (<=128 ГБ VRAM): обе модели в Q4 занимают ~23 ГБ VRAM (1×GPU 24–48 ГБ RTX 4090 / L40S, "
-        "аренда ДЦ РФ ~65 000–95 000 ₽/мес или действующий GPU-сервер Softline); при базе ТЗ 100–300 запр./мес "
-        "(и масштабе до 200 запр./день) экономия составляет 50–300 чел.-ч/мес, запас GPU >50×."
+        "аренда ДЦ РФ ~65–95 тыс. ₽/мес или GPU Softline); база ТЗ 100–300 запр./мес экономит 50–300 чел.-ч/мес."
     )
     ws["A19"] = (
-        "Масштабирование до 300 регламентов не увеличивает число токенов на запрос (фиксированный top-K после Qdrant+BM25). "
-        "Для уточнений, отказов и эскалаций Шаг 3 не вызывается (экономия ~40% токенов), а спам/защита RBAC обрабатываются за 0 токенов."
+        "Масштабирование до 300 регламентов не увеличивает расход токенов на запрос (фиксированный top-K после Qdrant+BM25). "
+        "Для уточнений и эскалаций Шаг 3 не вызывается (~0.03 ₽), а спам/защита RBAC работают за 0 токенов."
     )
+
+    # Fix column widths, row heights, alignment & 1-page landscape print fit so NO text overlaps or clips!
+    ws.column_dimensions["A"].width = 34.0
+    ws.column_dimensions["B"].width = 30.0
+    ws.column_dimensions["I"].width = 16.0
+    for r in (9, 10, 11):
+        ws.row_dimensions[r].height = 38.0
+        for c in range(1, 10):
+            cell = ws.cell(r, c)
+            al = cell.alignment
+            cell.alignment = Alignment(
+                horizontal=al.horizontal if al else None,
+                vertical="center",
+                wrap_text=True,
+            )
+    for r in (17, 18, 19):
+        ws.row_dimensions[r].height = 40.0
+        ws[f"A{r}"].alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+
+    ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 1
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
 
     wb.save(xlsx_path)
 
